@@ -31,3 +31,6 @@ class JsonProtocol(asyncio.Protocol):
     def send(self, obj):
         s = json.dumps(obj) + "\n"
         return self.transport.write(s.encode())
+
+    def received(self, obj):
+        raise NotImplementedError()
