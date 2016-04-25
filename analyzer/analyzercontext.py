@@ -40,12 +40,12 @@ class AnalyzerClient(JsonProtocol):
         self.loop.stop()
 
 class AnalyzerContext():
-    def __init__(self, bootstrap_config_fn=None):
+    def __init__(self, bootstrap=None):
+        # environment variable overrides parameter
         if 'PTO_BOOTSTRAP' in os.environ:
             bootstrap = json.loads(os.environ['PTO_BOOTSTRAP'])
-        elif bootstrap_config_fn is not None:
-            bootstrap = json.loads(open(bootstrap_config_fn).read())
-        else:
+
+        if bootstrap is None:
             raise ConfigNotFound()
 
         self.curator = AnalyzerClient(bootstrap['host'], bootstrap['port'], bootstrap['identifier'], bootstrap['token'])
