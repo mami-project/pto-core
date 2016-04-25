@@ -2,18 +2,18 @@ import asyncio
 from jsonprotocol import JsonProtocol
 from pymongo import MongoClient
 
-from .supervisor import SupervisorOnline, SupervisorScript
+from .agent import OnlineAgent, ScriptAgent
 import os
 
-class CuratorAnalyzerServer(JsonProtocol):
+class SupervisorServer(JsonProtocol):
     def __init__(self, curator):
-        self.curator = curator
+        self.agent = curator
 
     def connection_made(self, transport):
         super().connection_made(transport)
 
     def received(self, obj):
-        # determine corresponding analysis object and pass on the request
+        # determine corresponding agent object and pass on the request to it
         try:
             identifier = str(obj['identifier'])
             token = str(obj['token'])
@@ -23,39 +23,24 @@ class CuratorAnalyzerServer(JsonProtocol):
             return
 
         try:
-            analyzer = self.curator.get_analyzer(identifier)
+            agent = self.agent.get_agent(identifier)
         except KeyError:
             print("no analyzer with this identifier")
             self.send({'error': 'authentication failed, analyzer not on record with this identifier'})
             return
 
-        if analyzer.token == token:
-            ans = analyzer.handle_request(obj)
+        if agent.token == token:
+            ans = agent.handle_request(obj)
             self.send(ans)
         else:
             self.send({'error': 'authentication failed, token incorrect'})
 
-class Curator:
+class Supervisor:
     """
-    The curator is the overall manager of the analysis engine. Its duties are:
-     - grant and revoke access to the database
-     - control the sensor and validator processes
-     - execute analyzers
-     - manages overall workflow and ensures that generated observations are valid
-     - is controlled via websocket interface
 
-     The sensor, validator and analyzers are not run together in the same python interpreter because all of these will
-     dynamically load and unload code. This would subvert access control.
-
-     Also the goal is to concentrate all state information in the curator process with the goal that all other components
-     can be written state-less.
     """
     def __init__(self, loop, mongo, analyzer_host='localhost', analyzer_port=33424):
         """
-        Upon creation, clean up the environment:
-        - delete all users with username starting with 'analyzer_'
-        - delete all (temporary) collections in the analysis database.
-
         :param mongo: MongoDB client connection with rights to create users on the analyzer database
         """
         self.loop = loop
@@ -66,14 +51,14 @@ class Curator:
 
         self.sensor = None
         self.validator = None
-        self.supervisors = {}
+        self.agents = {}
 
         # todo delete users and collections
 
         self.next_identifier = 0
 
-    def get_analyzer(self, identifier):
-        return self.supervisors[identifier]
+    def get_agent(self, identifier):
+        return self.agents[identifier]
 
     def _create_identifier(self):
         # TODO: more intelligent?
@@ -86,17 +71,17 @@ class Curator:
         token = os.urandom(16).hex()
         return {'token': token, 'identifier': identifier, 'host': self.analyzer_host, 'port': self.analyzer_port}
 
-    async def create_online_supervisor(self):
+    async def create_online_agent(self):
         print("creating online supervisor")
         bootstrap = self._create_bootstrap()
-        supervisor = SupervisorOnline(bootstrap['identifier'], bootstrap['token'], self.mongo)
-        self.supervisors[bootstrap['identifier']] = supervisor
+        supervisor = OnlineAgent(bootstrap['identifier'], bootstrap['token'], self.mongo)
+        self.agents[bootstrap['identifier']] = supervisor
 
         await supervisor.startup()
 
         return bootstrap, supervisor
 
-    async def create_script_supervisor(self, cmdline):
+    async def create_script_agent(self, cmdline):
         """
         :param cmdline: Command line to run
         """
@@ -105,15 +90,15 @@ class Curator:
         # (because JSON is more fun than cmdline arguments)
 
         bootstrap = self._create_bootstrap()
-        supervisor = SupervisorScript(bootstrap, self.mongo, cmdline)
-        self.supervisors[bootstrap['identifier']] = supervisor
+        supervisor = ScriptAgent(bootstrap, self.mongo, cmdline)
+        self.agents[bootstrap['identifier']] = supervisor
 
         return supervisor
 
     def start(self):
         print("starting servers...")
         # Start communication server for analyzers.
-        analyzer_server_coro = self.loop.create_server(lambda: CuratorAnalyzerServer(self), host='localhost', port=33424)
+        analyzer_server_coro = self.loop.create_server(lambda: SupervisorServer(self), host='localhost', port=33424)
         self.analyzer_server = self.loop.run_until_complete(analyzer_server_coro)
 
         # Start websocket listener for the web control panel.
@@ -125,14 +110,14 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
 
-    cur = Curator(loop, mongo)
+    cur = Supervisor(loop, mongo)
 
     # create online supervisor and print account details
-    bootstrap, supervisor = loop.run_until_complete(cur.create_online_supervisor())
+    bootstrap, agent = loop.run_until_complete(cur.create_online_agent())
     print(bootstrap)
 
     cur.start()
     try:
         loop.run_forever()
     except KeyboardInterrupt:
-        loop.run_until_complete(supervisor.teardown())
+        loop.run_until_complete(agent.teardown())

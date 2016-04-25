@@ -5,10 +5,10 @@ import json
 import os
 import subprocess
 
-class SupervisorError(Exception):
+class AgentError(Exception):
     pass
 
-class SupervisorBase:
+class AgentBase:
     # TODO: check mongo return values & exceptions
     def __init__(self, identifier, token, mongo: MongoClient):
         self.identifier = identifier
@@ -18,7 +18,7 @@ class SupervisorBase:
         # a list of cleanup coroutines for reverting in case of error
         self.stack = []
 
-    async def create_user(self):
+    def create_user(self):
         # TODO consider to separate create user and create role
         self.stack.append(self.delete_user)
 
@@ -43,7 +43,7 @@ class SupervisorBase:
 
         print("user created")
 
-    async def delete_user(self):
+    def delete_user(self):
         db = self.mongo.analysis
 
         db.remove_user("analyzer_"+self.identifier)
@@ -52,7 +52,7 @@ class SupervisorBase:
         self.stack.remove(self.delete_user)
         print("user deleted")
 
-    async def create_collection(self):
+    def create_collection(self):
         db = self.mongo.analysis
 
         db.create_collection(self.identifier)
@@ -61,7 +61,7 @@ class SupervisorBase:
         print("collection created")
 
 
-    async def delete_collection(self):
+    def delete_collection(self):
         db = self.mongo.analysis
 
         db.drop_collection(self.identifier)
@@ -74,33 +74,25 @@ class SupervisorBase:
         self.stack.append(self.free_rawdata)
         print("rawdata loaded")
 
-    async def free_rawdata(self):
+    def free_rawdata(self):
         self.stack.remove(self.free_rawdata)
         print("rawdata freed")
 
-    async def load_validator(self):
-        self.stack.append(self.free_validator)
-        print("validator loaded")
-
-    async def exec_validator(self):
-        print("validator executed")
-
-    async def free_validator(self):
-        self.stack.remove(self.free_validator)
-        print("validator freed")
-
-    async def lock_types(self):
+    def lock_types(self):
         self.stack.append(self.free_types)
         print("types locked")
 
-    async def free_types(self):
+    def free_types(self):
         self.stack.remove(self.free_types)
         print("types freed")
 
     async def cleanup(self):
-        for corofunc in reversed(self.stack):
+        for func in reversed(self.stack):
             try:
-                await corofunc()
+                if asyncio.iscoroutinefunction(func):
+                    await func()
+                else:
+                    func()
             except:
                 # TODO: log problem and continue cleanup
                 print("Error during cleanup:")
@@ -126,43 +118,39 @@ class SupervisorBase:
                 }
             }
         elif req['req'] == 'get_distributed':
-            return {'address': 'localhost:8706'}
+            return {'address': '127.0.0.1:8706'}
         else:
             return {'error': 'unknown request'}
 
-class SupervisorOnline(SupervisorBase):
+class OnlineAgent(AgentBase):
     def __init__(self, identifier, token, mongo):
         super().__init__(identifier, token, mongo)
 
     async def startup(self):
         try:
-            await self.lock_types()
             await self.load_rawdata()
-            await self.load_validator()
-            await self.create_collection()
-            await self.create_user()
+            self.create_collection()
+            self.create_user()
         except:
             await self.cleanup()
 
             # TODO add more info
-            raise SupervisorError()
+            raise AgentError()
 
     async def teardown(self):
         try:
-            await self.delete_user()
-            await self.free_rawdata()
-            await self.free_validator()
-            await self.delete_collection()
-            await self.free_types()
+            self.delete_user()
+            self.delete_collection()
+            self.free_rawdata()
         except:
             await self.cleanup()
 
             # TODO add more info
-            raise SupervisorError()
+            raise AgentError()
         else:
             assert(len(self.stack) == 0)
 
-class SupervisorScript(SupervisorBase):
+class ScriptAgent(AgentBase):
     def __init__(self, bootstrap, cmdline, mongo):
         super().__init__(bootstrap['identifier'], bootstrap['token'], mongo)
 
@@ -177,7 +165,7 @@ class SupervisorScript(SupervisorBase):
         print("analyzer loaded")
 
     async def exec_analyzer(self):
-        # assuming AnalyzerServer is run by curator
+        # assuming AnalyzerServer is run by supervisor
 
         # inherit current process environment (default behavior) and add bootstrap information
         env = dict(os.environ)
@@ -203,30 +191,24 @@ class SupervisorScript(SupervisorBase):
     async def run(self):
         try:
             # stage 1: prepare
-            await self.lock_types()
+            self.lock_types()
             await self.load_rawdata()
             await self.load_analyzer()
-            await self.load_validator()
-            await self.create_collection()
-            await self.create_user()
+            self.create_collection()
+            self.create_user()
 
             # stage 2: execute analyzer
             await self.exec_analyzer()
 
             # stage 3: prepare for validation
-            await self.delete_user()
-            await self.free_rawdata()
-            await self.free_analyzer()
+            self.delete_user()
+            self.free_rawdata()
+            self.free_analyzer()
 
-            # stage 4: execute validator
-            await self.exec_validator()
-
-            # stage 5: finalizing
-            await self.free_validator()
-
-            await self.commit()
-            await self.delete_collection()
-            await self.free_types()
+            # TODO: move to validator
+            #await self.commit()
+            #await self.delete_collection()
+            #await self.free_types()
         except:
             await self.cleanup()
             return False

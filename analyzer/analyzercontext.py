@@ -110,8 +110,8 @@ class AnalyzerContext():
 
     def validate(self):
         # TODO: implement
-        # production: curator will revoke user rights and check if disconnected
-        # ans = self.curator.request('validate')
+        # production: supervisor will revoke user rights and check if disconnected
+        # ans = self.supervisor.request('validate')
 
         # close if in production mode
         # self.mongo.close()
