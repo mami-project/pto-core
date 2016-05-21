@@ -2,6 +2,7 @@ from typing import Sequence, Tuple
 from datetime import datetime
 
 from pymongo.collection import Collection
+from pymongo.operations import UpdateOne, InsertOne, DeleteOne
 from bson import CodecOptions
 from collections import OrderedDict
 
@@ -183,28 +184,39 @@ def commit(analyzer_id: int,
     if len(errors) > 0:
         return errors
 
-    # get deprecation candidates
-    # TODO: special treatment of direct observation analyzers. (additional condition: source)
-    candidates = output_coll.find({'analyzer_id': analyzer_id,
-                                   '$or': [
-                                       {'time':    {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                                       {'$and': [
-                                           {'time.from':   {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                                           {'time.to':     {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                                       ]}
-                                   ]},
-                                  {'_id': 1})
+    # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
+    # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
 
+    # query to find deprecation candidates
+    candidates_query = {'analyzer_id': analyzer_id,
+                        '$or': [
+                        {'time':    {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+                            {'$and': [
+                            {'time.from':   {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+                            {'time.to':     {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+                            ]}
+                        ]}
+
+    # 1. first deprecate all candidates and update action_id
+    output_coll.update_many(candidates_query, {'deprecated': True, 'action_id': action_id})
+
+    # 2. find all observations that exist both in the output collection and in the temporary collection
+    candidates = output_coll.find(candidates_query)
     pairs = ((candidate, find_counterpart(candidate, temporary_coll)) for candidate in candidates)
-    candidates_deprecate = filter(lambda x: x[1] is None, pairs)
-    candidates_update = filter(lambda x: x[1] is not None, pairs)
 
-    # deprecate
-    output_coll.bulk
+    # 3. mark all of them in the temporary collection
+    mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'output_id': pair[0]['_id']}) for pair in pairs)
+    temporary_coll.bulk_write(mark_ops)
 
-    # update (& mark in temporary)
-    output_coll.bulk_write()
-    temporary_coll.bulk_write()
+    # 4. commit changes into output collection
+    def create_output_ops():
+        # generator that iterates over temporary coll and create operations for output collection
+        # note that the find query projection is {'_id': 0}: using this we can simply insert the document
+        # into the output collection
+        for doc in temporary_coll.find({}, {'_id': 0}):
+            if 'output_id' in doc:
+                yield UpdateOne({'_id': doc['output_id']}, {'deprecated': False})
+            else:
+                yield InsertOne(doc)
 
-    # insert those who aren't marked ;-)
-    output_coll.bulk_write(temporary_coll.find({}))
+    output_coll.bulk_write(create_output_ops())
