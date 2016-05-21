@@ -2,14 +2,11 @@ from typing import Sequence, Tuple
 from datetime import datetime
 
 from pymongo.collection import Collection
-from pymongo.operations import UpdateOne, InsertOne, DeleteOne
+from pymongo.operations import UpdateOne, InsertOne
 from bson import CodecOptions
 from collections import OrderedDict
 
 import re
-
-from itertools import tee
-import operator
 
 from . import valuechecks
 
@@ -57,9 +54,11 @@ class ValidationError(Exception):
     def __repr__(self):
         return "Validation Error {}: {}".format(self.obsid, self.reason)
 
+
 def check(cond, obsid, reason):
     if not cond:
         raise ValidationError(obsid, reason)
+
 
 def validate(
         analyzer_id: int,
@@ -220,3 +219,6 @@ def commit(analyzer_id: int,
                 yield InsertOne(doc)
 
     output_coll.bulk_write(create_output_ops())
+
+    # 5. finally delete collection
+    temporary_coll.drop()
