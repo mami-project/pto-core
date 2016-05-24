@@ -3,41 +3,20 @@ import json
 import asyncio
 from jsonprotocol import JsonProtocol
 from pymongo import MongoClient
+from supervisor import SupervisorClient
+
 
 class ConfigNotFound(Exception):
     pass
 
+
 class MessageNotUnderstood(Exception):
     pass
+
 
 class ContextError(Exception):
     pass
 
-class AnalyzerClient(JsonProtocol):
-    def __init__(self, host, port, identifier, token):
-        self.identifier = identifier
-        self.token = token
-        self.loop = asyncio.get_event_loop()
-        coro = self.loop.create_connection(lambda: self, host, port)
-        self.loop.run_until_complete(coro)
-
-    def recv(self):
-        self.loop.run_forever()
-        return self._current
-
-    def request(self, action: str, obj: dict = None):
-        payload = obj.copy() if obj is not None else {}
-
-        payload['req'] = action
-        payload['identifier'] = self.identifier
-        payload['token'] = self.token
-
-        self.send(payload)
-        return self.recv()
-
-    def received(self, obj):
-        self._current = obj
-        self.loop.stop()
 
 class AnalyzerContext():
     def __init__(self, bootstrap=None):
@@ -48,10 +27,10 @@ class AnalyzerContext():
         if bootstrap is None:
             raise ConfigNotFound()
 
-        self.curator = AnalyzerClient(bootstrap['host'], bootstrap['port'], bootstrap['identifier'], bootstrap['token'])
+        self.supervisor = SupervisorClient(bootstrap['host'], bootstrap['port'], bootstrap['identifier'], bootstrap['token'])
 
         # authenticate and get mongo credentials
-        ans = self.curator.request('get_mongo')
+        ans = self.supervisor.request('get_mongo')
         if 'error' in ans:
             raise ContextError(ans['error'])
 
@@ -71,7 +50,7 @@ class AnalyzerContext():
 
     def get_spark(self):
         if self._spark_context is None:
-            ans = self.curator.request('get_spark')
+            ans = self.supervisor.request('get_spark')
             if 'error' in ans:
                 raise ContextError(ans['error'])
 
@@ -99,7 +78,7 @@ class AnalyzerContext():
 
     def get_distributed(self):
         if self._distributed_executor is None:
-            ans = self.curator.request('get_distributed')
+            ans = self.supervisor.request('get_distributed')
             if 'error' in ans:
                 raise ContextError(ans['error'])
 

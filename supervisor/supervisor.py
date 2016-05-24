@@ -35,19 +35,46 @@ class SupervisorServer(JsonProtocol):
         else:
             self.send({'error': 'authentication failed, token incorrect'})
 
+
+class SupervisorClient(JsonProtocol):
+    def __init__(self, host, port, identifier, token):
+        self.identifier = identifier
+        self.token = token
+        self.loop = asyncio.get_event_loop()
+        coro = self.loop.create_connection(lambda: self, host, port)
+        self.loop.run_until_complete(coro)
+
+    def recv(self):
+        self.loop.run_forever()
+        return self._current
+
+    def request(self, action: str, obj: dict = None):
+        payload = obj.copy() if obj is not None else {}
+
+        payload['req'] = action
+        payload['identifier'] = self.identifier
+        payload['token'] = self.token
+
+        self.send(payload)
+        return self.recv()
+
+    def received(self, obj):
+        self._current = obj
+        self.loop.stop()
+
 class Supervisor:
     """
 
     """
-    def __init__(self, loop, mongo, analyzer_host='localhost', analyzer_port=33424):
+    def __init__(self, loop, mongo, supervisor_host='localhost', supervisor_port=33424):
         """
         :param mongo: MongoDB client connection with rights to create users on the analyzer database
         """
         self.loop = loop
         self.mongo = mongo
 
-        self.analyzer_host = analyzer_host
-        self.analyzer_port = analyzer_port
+        self.supervisor_host = supervisor_host
+        self.supervisor_port = supervisor_port
 
         self.sensor = None
         self.validator = None
@@ -69,7 +96,7 @@ class Supervisor:
     def _create_bootstrap(self):
         identifier = self._create_identifier()
         token = os.urandom(16).hex()
-        return {'token': token, 'identifier': identifier, 'host': self.analyzer_host, 'port': self.analyzer_port}
+        return {'token': token, 'identifier': identifier, 'host': self.supervisor_host, 'port': self.supervisor_port}
 
     async def create_online_agent(self):
         print("creating online supervisor")
@@ -86,9 +113,6 @@ class Supervisor:
         :param cmdline: Command line to run
         """
         print("creating script supervisor")
-        # TODO: provide params over CuratorAnalysisServer in addition to command line.
-        # (because JSON is more fun than cmdline arguments)
-
         bootstrap = self._create_bootstrap()
         supervisor = ScriptAgent(bootstrap, self.mongo, cmdline)
         self.agents[bootstrap['identifier']] = supervisor
@@ -96,14 +120,9 @@ class Supervisor:
         return supervisor
 
     def start(self):
-        print("starting servers...")
-        # Start communication server for analyzers.
-        analyzer_server_coro = self.loop.create_server(lambda: SupervisorServer(self), host='localhost', port=33424)
-        self.analyzer_server = self.loop.run_until_complete(analyzer_server_coro)
-
-        # Start websocket listener for the web control panel.
-        # control_coro =
-        # self.control_server = self.loop.run_until(control_coro)
+        print("starting server...")
+        server_coro = self.loop.create_server(lambda: SupervisorServer(self), host=self.supervisor_host, port=self.supervisor_port)
+        self.server = self.loop.run_until_complete(server_coro)
 
 
 if __name__ == "__main__":
