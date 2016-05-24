@@ -1,72 +1,80 @@
 import asyncio
-from jsonprotocol import JsonProtocol
+import os
+
 from pymongo import MongoClient
 
 from .agent import OnlineAgent, ScriptAgent
-import os
+from jsonprotocol import JsonProtocol
+
 
 class SupervisorServer(JsonProtocol):
-    def __init__(self, curator):
-        self.agent = curator
+    def __init__(self, supervisor):
+        self.supervisor = supervisor
 
     def connection_made(self, transport):
         super().connection_made(transport)
 
     def received(self, obj):
-        # determine corresponding agent object and pass on the request to it
         try:
             identifier = str(obj['identifier'])
             token = str(obj['token'])
+            action = str(obj['action'])
+            payload = str(obj['payload'])
         except KeyError:
-            print("request is missing token or identifier")
+            print("request is missing one or more fields: {token, identifier, action, payload}")
             self.send({'error': 'authentication failed, request is missing token or identifier'})
             return
 
-        try:
-            agent = self.agent.get_agent(identifier)
-        except KeyError:
-            print("no analyzer with this identifier")
-            self.send({'error': 'authentication failed, analyzer not on record with this identifier'})
-            return
-
-        if agent.token == token:
-            ans = agent.handle_request(obj)
+        if identifier == 'sensor':
+            ans = self.supervisor.sensor_request(token, action, payload)
             self.send(ans)
         else:
-            self.send({'error': 'authentication failed, token incorrect'})
+            ans = self.supervisor.analyzer_request(identifier, token, action, payload)
+            self.send(ans)
 
 
 class SupervisorClient(JsonProtocol):
+    """
+    Simple request-answer based client.
+    """
     def __init__(self, host, port, identifier, token):
         self.identifier = identifier
         self.token = token
-        self.loop = asyncio.get_event_loop()
+
+        # get fresh and empty event loop
+        self.loop = asyncio.new_event_loop()
+
+        # connect to server
         coro = self.loop.create_connection(lambda: self, host, port)
         self.loop.run_until_complete(coro)
 
-    def recv(self):
+    def request(self, action: str, payload: dict = None):
+        msg = {
+            'identifier': self.identifier,
+            'token': self.token,
+            'action': action,
+            'payload': payload
+        }
+
+        # send request
+        self.send(msg)
+
+        # wait until self.received() is called and _current contains the response
+        # NOTE: obviously this pattern will fail if the server doesn't send exactly the same number of
+        # answers than the number of received requests.
         self.loop.run_forever()
         return self._current
-
-    def request(self, action: str, obj: dict = None):
-        payload = obj.copy() if obj is not None else {}
-
-        payload['req'] = action
-        payload['identifier'] = self.identifier
-        payload['token'] = self.token
-
-        self.send(payload)
-        return self.recv()
 
     def received(self, obj):
         self._current = obj
         self.loop.stop()
 
+
 class Supervisor:
     """
 
     """
-    def __init__(self, loop, mongo, supervisor_host='localhost', supervisor_port=33424):
+    def __init__(self, loop, mongo, sensor_token, supervisor_host='localhost', supervisor_port=33424):
         """
         :param mongo: MongoDB client connection with rights to create users on the analyzer database
         """
@@ -76,16 +84,31 @@ class Supervisor:
         self.supervisor_host = supervisor_host
         self.supervisor_port = supervisor_port
 
-        self.sensor = None
-        self.validator = None
+        self.sensor_token = sensor_token
         self.agents = {}
 
         # todo delete users and collections
 
         self.next_identifier = 0
 
-    def get_agent(self, identifier):
-        return self.agents[identifier]
+    def analyzer_request(self, identifier, token, action, payload):
+        try:
+            agent = self.agents[identifier]
+        except KeyError:
+            print("no analyzer with this identifier")
+            return {'error': 'authentication failed, analyzer not on record with this identifier'}
+
+        if agent.token == token:
+            return agent.handle_request(action, payload)
+        else:
+            return {'error': 'authentication failed, token incorrect'}
+
+    def sensor_request(self, token, action, payload):
+        if token != self.sensor_token:
+            return {'error': 'authentication failed, token incorrect'}
+
+        if action == 'orders':
+            pass
 
     def _create_identifier(self):
         # TODO: more intelligent?
@@ -101,12 +124,12 @@ class Supervisor:
     async def create_online_agent(self):
         print("creating online supervisor")
         bootstrap = self._create_bootstrap()
-        supervisor = OnlineAgent(bootstrap['identifier'], bootstrap['token'], self.mongo)
-        self.agents[bootstrap['identifier']] = supervisor
+        agent = OnlineAgent(bootstrap['identifier'], bootstrap['token'], self.mongo)
+        self.agents[bootstrap['identifier']] = agent
 
-        await supervisor.startup()
+        await agent.startup()
 
-        return bootstrap, supervisor
+        return bootstrap, agent
 
     async def create_script_agent(self, cmdline):
         """
@@ -114,10 +137,10 @@ class Supervisor:
         """
         print("creating script supervisor")
         bootstrap = self._create_bootstrap()
-        supervisor = ScriptAgent(bootstrap, self.mongo, cmdline)
-        self.agents[bootstrap['identifier']] = supervisor
+        agent = ScriptAgent(bootstrap, self.mongo, cmdline)
+        self.agents[bootstrap['identifier']] = agent
 
-        return supervisor
+        return agent
 
     def start(self):
         print("starting server...")
@@ -129,7 +152,7 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
 
-    cur = Supervisor(loop, mongo)
+    cur = Supervisor(loop, mongo, 'abcdefg')
 
     # create online supervisor and print account details
     bootstrap, agent = loop.run_until_complete(cur.create_online_agent())
