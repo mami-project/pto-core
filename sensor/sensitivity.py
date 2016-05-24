@@ -21,7 +21,7 @@ def hourly(interval: Interval) -> Interval:
     return start, stop
 
 
-class SensorBase:
+class SensitivityBase:
     def __init__(self, analyzer_name: str, inputs: Sequence[str], action_log: Collection):
         self.name = analyzer_name
         self.log = action_log
@@ -42,7 +42,7 @@ class SensorBase:
         raise NotImplementedError()
 
 
-class SensorNaive(SensorBase):
+class SensorNaive(SensitivityBase):
     def __init__(self, analyzer_name: str, inputs: Sequence[str], action_log: Collection):
         super().__init__(analyzer_name, inputs, action_log)
 
@@ -55,7 +55,7 @@ class SensorNaive(SensorBase):
             return []
 
 
-class SensorAggregating(SensorBase):
+class SensorAggregating(SensitivityBase):
     def __init__(self,
                  analyzer_name: str,
                  inputs: Sequence[str],
@@ -82,9 +82,8 @@ class SensorAggregating(SensorBase):
         return tl.intervals
 
 
-class SensorDistance(SensorBase):
+class SensorDistance(SensitivityBase):
     # TODO
     def check(self) -> Sequence[Interval]:
         raise NotImplementedError()
-
 
