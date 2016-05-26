@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 from jsonprotocol import JsonProtocol
 from pymongo import MongoClient
 from supervisor import SupervisorClient
@@ -17,17 +16,16 @@ class MessageNotUnderstood(Exception):
 class ContextError(Exception):
     pass
 
-
 class AnalyzerContext():
-    def __init__(self, bootstrap=None):
+    def __init__(self, bootstrap: Bootstrap=None):
         # environment variable overrides parameter
-        if 'PTO_BOOTSTRAP' in os.environ:
-            bootstrap = json.loads(os.environ['PTO_BOOTSTRAP'])
+        if 'PTO_CREDENTIALS' in os.environ:
+            bootstrap = json.loads(os.environ['PTO_CREDENTIALS'])
 
         if bootstrap is None:
             raise ConfigNotFound()
 
-        self.supervisor = SupervisorClient(bootstrap['host'], bootstrap['port'], bootstrap['identifier'], bootstrap['token'])
+        self.supervisor = SupervisorClient(bootstrap.host, bootstrap.port, bootstrap.identifier, bootstrap.token)
 
         # authenticate and get mongo credentials
         ans = self.supervisor.request('get_mongo')

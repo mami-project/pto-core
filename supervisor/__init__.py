@@ -1,1 +1,1 @@
-from .supervisor import Supervisor, SupervisorClient
+from .supervisor import Supervisor, SupervisorClient, Credentials

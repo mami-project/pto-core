@@ -1,9 +1,13 @@
 import asyncio
+from typing import Sequence, Callable, Any
 from pymongo import MongoClient
+from functools import partial
 import traceback
 import json
 import os
 import subprocess
+
+from supervisor import Credentials
 
 class AgentError(Exception):
     pass
@@ -18,9 +22,9 @@ class AgentBase:
         # a list of cleanup coroutines for reverting in case of error
         self.stack = []
 
-    def create_user(self):
+    def _create_user(self):
         # TODO consider to separate create user and create role
-        self.stack.append(self.delete_user)
+        self.stack.append(self._delete_user)
 
         db = self.mongo.analysis
 
@@ -43,56 +47,36 @@ class AgentBase:
 
         print("user created")
 
-    def delete_user(self):
+    def _delete_user(self):
         db = self.mongo.analysis
 
         db.remove_user("analyzer_"+self.identifier)
         db.command("dropRole", "analyzer_"+self.identifier)
 
-        self.stack.remove(self.delete_user)
+        self.stack.remove(self._delete_user)
         print("user deleted")
 
-    def create_collection(self):
+    def _create_collection(self):
         db = self.mongo.analysis
 
-        db.create_collection(self.identifier)
+        db._create_collection(self.identifier)
 
-        self.stack.append(self.delete_collection)
+        self.stack.append(self._delete_collection)
         print("collection created")
 
 
-    def delete_collection(self):
+    def _delete_collection(self):
         db = self.mongo.analysis
 
         db.drop_collection(self.identifier)
 
-        self.stack.remove(self.delete_collection)
+        self.stack.remove(self._delete_collection)
         print("collection deleted")
 
-
-    async def load_rawdata(self):
-        self.stack.append(self.free_rawdata)
-        print("rawdata loaded")
-
-    def free_rawdata(self):
-        self.stack.remove(self.free_rawdata)
-        print("rawdata freed")
-
-    def lock_types(self):
-        self.stack.append(self.free_types)
-        print("types locked")
-
-    def free_types(self):
-        self.stack.remove(self.free_types)
-        print("types freed")
-
-    async def cleanup(self):
+    def _cleanup(self):
         for func in reversed(self.stack):
             try:
-                if asyncio.iscoroutinefunction(func):
-                    await func()
-                else:
-                    func()
+                func()
             except:
                 # TODO: log problem and continue cleanup
                 print("Error during cleanup:")
@@ -101,7 +85,7 @@ class AgentBase:
 
         print("Cleanup done.")
 
-    def handle_request(self, req):
+    def _handle_request(self, req):
         if req['req'] == 'get_mongo':
             return {
                 'url': 'mongodb://{}:{}@localhost/analysis'.format('analyzer_'+self.identifier, self.token),
@@ -122,28 +106,30 @@ class AgentBase:
         else:
             return {'error': 'unknown request'}
 
+    def teardown(self):
+        raise NotImplementedError()
+
 class OnlineAgent(AgentBase):
-    def __init__(self, identifier, token, mongo):
+    def __init__(self, identifier, token,
+                 mongo: MongoClient):
+
         super().__init__(identifier, token, mongo)
 
-    async def startup(self):
         try:
-            await self.load_rawdata()
-            self.create_collection()
-            self.create_user()
+            self._create_collection()
+            self._create_user()
         except:
-            await self.cleanup()
+            self._cleanup()
 
             # TODO add more info
             raise AgentError()
 
-    async def teardown(self):
+    def teardown(self):
         try:
-            self.delete_user()
-            self.delete_collection()
-            self.free_rawdata()
+            self._delete_user()
+            self._delete_collection()
         except:
-            await self.cleanup()
+            self._cleanup()
 
             # TODO add more info
             raise AgentError()
@@ -151,25 +137,59 @@ class OnlineAgent(AgentBase):
             assert(len(self.stack) == 0)
 
 class ScriptAgent(AgentBase):
-    def __init__(self, bootstrap, cmdline, mongo):
-        super().__init__(bootstrap['identifier'], bootstrap['token'], mongo)
+    def __init__(self, analyzer_id,
+                 credentials: Credentials,
+                 cmdline: Sequence[str],
+                 mongo: MongoClient):
+        super().__init__(credentials.identifier, credentials.token, mongo)
 
+        self.analyzer_id = analyzer_id
         self.cmdline = cmdline
-        self.bootstrap = bootstrap
+
+        self.credentials = credentials
 
         self.analyzer_stdout = []
         self.analyzer_stderr = []
 
-    async def load_analyzer(self):
-        self.stack.append(self.free_analyzer)
+        try:
+            self._load_analyzer()
+            self._create_collection()
+            self._create_user()
+        except:
+            self._cleanup()
+
+            # TODO add more info
+            raise AgentError()
+
+    def teardown(self):
+        try:
+            self._delete_user()
+            self._delete_collection()
+            self._free_analyzer()
+        except:
+            self._cleanup()
+
+            # TODO add more info
+            raise AgentError()
+        else:
+            assert(len(self.stack) == 0)
+
+
+    def _load_analyzer(self):
+        self.stack.append(self._free_analyzer)
         print("analyzer loaded")
 
-    async def exec_analyzer(self):
+    def _free_analyzer(self):
+        self.stack.remove(self._free_analyzer)
+        print("analyzer freed")
+
+    async def execute(self):
         # assuming AnalyzerServer is run by supervisor
 
-        # inherit current process environment (default behavior) and add bootstrap information
+        # inherit current process environment (default behavior) and add credentials
         env = dict(os.environ)
-        env['PTO_BOOTSTRAP'] = json.dumps(self.bootstrap)
+
+        env['PTO_CREDENTIALS'] = json.dumps(self.credentials._asdict())
 
         proc = await asyncio.create_subprocess_exec(*self.cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 
@@ -181,37 +201,4 @@ class ScriptAgent(AgentBase):
 
         print("analyzer executed")
 
-    async def free_analyzer(self):
-        self.stack.remove(self.free_analyzer)
-        print("analyzer freed")
 
-    async def commit(self):
-        print("committed")
-
-    async def run(self):
-        try:
-            # stage 1: prepare
-            self.lock_types()
-            await self.load_rawdata()
-            await self.load_analyzer()
-            self.create_collection()
-            self.create_user()
-
-            # stage 2: execute analyzer
-            await self.exec_analyzer()
-
-            # stage 3: prepare for validation
-            self.delete_user()
-            self.free_rawdata()
-            self.free_analyzer()
-
-            # TODO: move to validator
-            #await self.commit()
-            #await self.delete_collection()
-            #await self.free_types()
-        except:
-            await self.cleanup()
-            return False
-        else:
-            assert(len(self.stack) == 0)
-            return True
