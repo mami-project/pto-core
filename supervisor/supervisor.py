@@ -1,20 +1,18 @@
 import asyncio
+import json
 import traceback
 
 import os
-from typing import Sequence
+from typing import Sequence, Mapping
 from functools import partial
 
 from pymongo import MongoClient
+from pymongo.collection import Collection
 
 from .agent import OnlineAgent, ScriptAgent
 from jsonprotocol import JsonProtocol
 from analyzerstate import AnalyzerState
 from mongoutils import AutoIncrementFactory
-
-from collections import namedtuple
-
-Credentials = namedtuple('Credentials', ['identifier', 'token', 'host', 'port'])
 
 class SupervisorServer(JsonProtocol):
     def __init__(self, supervisor):
@@ -34,27 +32,23 @@ class SupervisorServer(JsonProtocol):
             self.send({'error': 'authentication failed, request is missing token or identifier'})
             return
 
-        if identifier == 'sensor':
-            ans = self.supervisor.sensor_request(token, action, payload)
-            self.send(ans)
-        else:
-            ans = self.supervisor.analyzer_request(identifier, token, action, payload)
-            self.send(ans)
+        ans = self.supervisor.analyzer_request(identifier, token, action, payload)
+        self.send(ans)
 
 
 class SupervisorClient(JsonProtocol):
     """
     Simple request-answer based client.
     """
-    def __init__(self, credentials: Credentials):
-        self.identifier = credentials.identifier
-        self.token = credentials.token
+    def __init__(self, credentials):
+        self.identifier = credentials['identifier']
+        self.token = credentials['token']
 
         # get fresh and empty event loop
         self.loop = asyncio.new_event_loop()
 
         # connect to server
-        coro = self.loop.create_connection(lambda: self, credentials.host, credentials.port)
+        coro = self.loop.create_connection(lambda: self, credentials['host'], credentials['port'])
         self.loop.run_until_complete(coro)
 
     def request(self, action: str, payload: dict = None):
@@ -80,42 +74,27 @@ class SupervisorClient(JsonProtocol):
 
 
 class Supervisor:
-    """
+    def __init__(self, mongo: MongoClient, analyzers_coll: Collection, id_coll: Collection, loop=None, host='localhost', port=33424):
+        self.loop = loop or asyncio.get_event_loop()
 
-    """
-    def __init__(self, loop: asyncio.BaseEventLoop, mongo: MongoClient, sensor_token, supervisor_host='localhost', supervisor_port=33424):
-        """
-        :param mongo: MongoDB client connection with rights to create users on the analyzer database
-        """
-        self.loop = loop
+        id_factory = AutoIncrementFactory(id_coll)
+        self._action_id_creator = id_factory.get_incrementor('action_id')
+        self._online_id_creator = id_factory.get_incrementor('online_id')
+
+        self.host = host
+        self.port = port
+
         self.mongo = mongo
+        self.analyzers_state = AnalyzerState(analyzers_coll)
 
-        self.check_interval = 10
-
-        factory = AutoIncrementFactory(mongo.analysis.idfactory)
-
-        # maybe change that to action_id
-        # maybe seperate id for script (action_id) and online (something else)
-        self._action_id_creator = factory.get_incrementor('action_id')
-        self._online_id_creator = factory.get_incrementor('online_id')
-
-        self.supervisor_host = supervisor_host
-        self.supervisor_port = supervisor_port
-
-        self.analyzers_state = AnalyzerState(mongo.analysis.analyzers)
-
-        self.sensor_token = sensor_token
         self.agents = {}
+
+        self.server = None
 
         # todo delete users and collections
 
-    def start(self):
-        print("starting server...")
-        server_coro = self.loop.create_server(lambda: SupervisorServer(self), host=self.supervisor_host, port=self.supervisor_port)
+        server_coro = self.loop.create_server(lambda: SupervisorServer(self), host=self.host, port=self.port)
         self.server = self.loop.run_until_complete(server_coro)
-
-        self.loop.call_later(self.check_interval, self.check_for_work)
-
 
     def analyzer_request(self, identifier, token, action, payload):
         try:
@@ -129,46 +108,40 @@ class Supervisor:
         else:
             return {'error': 'authentication failed, token incorrect'}
 
-    def sensor_request(self, token, action, payload):
-        if token != self.sensor_token:
-            return {'error': 'authentication failed, token incorrect'}
-
-        if action == 'orders':
-            pass
-
     def shutdown_online_agent(self, agent):
         agent.teardown()
         del self.agents[agent.identifier]
 
     def create_online_agent(self):
         print("creating online supervisor")
-        credentials = Credentials(self._online_id_creator(), os.urandom(16).hex(), self.supervisor_host, self.supervisor_port)
+        online_id = self._online_id_creator()
+        token = os.urandom(16).hex()
 
-        agent = OnlineAgent(credentials.identifier, credentials.token, self.mongo)
+        agent = OnlineAgent(online_id, token, self.mongo)
 
-        self.agents[credentials.identifier] = agent
+        self.agents[agent.identifier] = agent
+
+        credentials = { 'identifier': agent.identifier, 'token': token, 'host': self.host, 'port': self.port }
 
         return credentials, agent
 
-    def create_script_agent(self, analyzer_id, cmdline: Sequence[str]) -> ScriptAgent:
-        """
-        :param cmdline: Command line to run
-        """
+    def create_script_agent(self, analyzer_id, execution_params: dict, cmdline: Sequence[str], cwd: str) -> ScriptAgent:
         print("creating script supervisor")
-        credentials = Credentials(self._action_id_creator(), os.urandom(16).hex(), self.supervisor_host, self.supervisor_port)
+        action_id = self._action_id_creator()
+        token = os.urandom(16).hex()
 
-        agent = ScriptAgent(analyzer_id, credentials, cmdline, self.mongo)
+        agent = ScriptAgent(analyzer_id, action_id, token, execution_params, self.host, self.port, cmdline, cwd, self.mongo)
         self.agents[agent.identifier] = agent
 
         return agent
 
-    def script_agent_done(self, agent, fut: asyncio.Future):
+    def script_agent_done(self, agent: ScriptAgent, fut: asyncio.Future):
         print("script agent done")
         agent.teardown()
         del self.agents[agent.identifier]
 
         try:
-            # raise exceptions happening in future
+            # raise exceptions that happened in the future
             fut.result()
         except Exception as e:
             # an error happened
@@ -180,12 +153,12 @@ class Supervisor:
             # everything went well, so give to validator
             self.analyzers_state.transition_to_executed(agent.analyzer_id)
 
-
     def check_for_work(self):
-        print("check for work")
         planned = self.analyzers_state.planned_analyzers()
+        print("check for work")
         for analyzer in planned:
-            agent = self.create_script_agent(analyzer['_id'], analyzer['cmdline'])
+            print("planned", analyzer)
+            agent = self.create_script_agent(analyzer['_id'], analyzer['execution_params'], analyzer['command_line'], analyzer['working_dir'])
 
             self.analyzers_state.transition_to_executing(agent.analyzer_id, agent.identifier)
 
@@ -194,23 +167,24 @@ class Supervisor:
             task.add_done_callback(partial(self.script_agent_done, agent))
             print("script agent started")
 
-        self.loop.call_later(self.check_interval, self.check_for_work)
+    async def run(self):
+        while True:
+            await asyncio.sleep(4)
+            self.check_for_work()
+
 
 def main():
     loop = asyncio.get_event_loop()
     mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
 
-    cur = Supervisor(loop, mongo, 'abcdefg')
+    sup = Supervisor(mongo, mongo.analysis.analyzers, mongo.analysis.idfactory, loop)
 
     # create online supervisor and print account details
-    bootstrap, agent = loop.run_until_complete(cur.create_online_agent())
-    print(bootstrap)
+    credentials, agent = sup.create_online_agent()
+    print(json.dumps(credentials))
 
-    cur.start()
-    try:
-        loop.run_forever()
-    except KeyboardInterrupt:
-        loop.run_until_complete(agent.teardown())
+    asyncio.ensure_future(sup.run())
+    loop.run_forever()
 
 if __name__ == "__main__":
     main()

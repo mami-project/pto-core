@@ -8,23 +8,31 @@ from timeline import Timeline
 
 Interval = Tuple[datetime, datetime]
 
-def find_last_run(action_log: Collection, analyzer_name: str) -> int:
-    docs = action_log.find({'action': 'analyze', 'name': analyzer_name}).sort('_id', pymongo.DESCENDING).limit(1)
+
+def find_last_run(action_log: Collection, analyzer_id: str) -> int:
+    docs = action_log.find({'action': 'analyze', 'analyzer_id': analyzer_id}).sort('_id', pymongo.DESCENDING).limit(1)
     try:
         return docs[0]['_id']
     except IndexError:
         return -1
 
-def changes_since(action_log: Collection, analyzer_name: str, inputs: Sequence[str]) -> Tuple[int, pymongo.cursor.Cursor]:
-    last_run_id = find_last_run(action_log, analyzer_name)
-    return last_run_id, action_log.find({'_id': {'$gt': last_run_id}, 'outputs': {'$in': inputs}})
 
-def basic(action_log: Collection, analyzer_name: str, inputs: Sequence[str]) -> Tuple[int, Sequence[Interval]]:
+def changes_since(action_log: Collection, analyzer_id: str, input_formats: Sequence[str], input_types: Sequence[str]) -> Tuple[int, pymongo.cursor.Cursor]:
+    last_run_id = find_last_run(action_log, analyzer_id)
+    changes = action_log.find({'_id': {'$gt': last_run_id},
+                               '$or': [{'output_types': {'$in': input_types}},
+                                       {'output_formats': {'$in': input_formats}}]
+                               })
+
+    return last_run_id, changes
+
+
+def basic(action_log: Collection, analyzer_id: str, input_formats: Sequence[str], input_types: Sequence[str]) -> Tuple[int, Sequence[Interval]]:
     """
     Note: it is important that the cursor is iterated only once, because otherwise it could happen for example that
           max_action_id was computed from a different set than tl.intervals.
     """
-    last_run_id, changes = changes_since(action_log, analyzer_name, inputs)
+    last_run_id, changes = changes_since(action_log, analyzer_id, input_types, input_formats)
 
     tl = Timeline()
     max_action_id = last_run_id
@@ -37,8 +45,9 @@ def basic(action_log: Collection, analyzer_name: str, inputs: Sequence[str]) -> 
 
     return max_action_id, tl.intervals
 
-def naive(action_log: Collection, analyzer_name: str, inputs: Sequence[str]) -> Sequence[Interval]:
-    last_run_id, changes = changes_since(action_log, analyzer_name, inputs)
+
+def naive(action_log: Collection, analyzer_id: str, input_formats: Sequence[str], input_types: Sequence[str]) -> Sequence[Interval]:
+    last_run_id, changes = changes_since(action_log, analyzer_id, input_formats, input_types)
 
     max_doc = list(changes.sort('_id', pymongo.DESCENDING).limit(1))
     max_action_id = max_doc[0]['_id'] if len(max_doc) > 0 else last_run_id
@@ -47,6 +56,7 @@ def naive(action_log: Collection, analyzer_name: str, inputs: Sequence[str]) -> 
         return max_action_id, [(datetime.min, datetime.max)]
     else:
         return max_action_id, []
+
 
 def extend_hourly(interval: Interval) -> Interval:
     start, stop = interval
@@ -59,13 +69,15 @@ def extend_hourly(interval: Interval) -> Interval:
 
     return start, stop
 
+
 def aggregating(
         extend_func: Callable[[Interval], Interval],
         action_log: Collection,
-        analyzer_name: str,
-        inputs: Sequence[str]) -> Sequence[Interval]:
+        analyzer_id: str,
+        input_formats: Sequence[str],
+        input_types: Sequence[str]) -> Sequence[Interval]:
 
-    last_run_id, changes = changes_since(action_log, analyzer_name, inputs)
+    last_run_id, changes = changes_since(action_log, analyzer_id, input_formats, input_types)
 
     tl = Timeline()
     max_action_id = last_run_id

@@ -1,23 +1,25 @@
 import asyncio
 from typing import Sequence, Callable, Any
-from pymongo import MongoClient
 from functools import partial
 import traceback
 import json
 import os
 import subprocess
 
-from supervisor import Credentials
+from pymongo import MongoClient
+
 
 class AgentError(Exception):
     pass
 
 class AgentBase:
     # TODO: check mongo return values & exceptions
-    def __init__(self, identifier, token, mongo: MongoClient):
+    def __init__(self, identifier, token, execution_params, mongo: MongoClient):
         self.identifier = identifier
         self.token = token
         self.mongo = mongo
+
+        self.execution_params = execution_params
 
         # a list of cleanup coroutines for reverting in case of error
         self.stack = []
@@ -31,7 +33,7 @@ class AgentBase:
         # TODO: do not use token for password, use something urandom
 
         # create custom role: only readWrite on own collection
-        db.command("createRole", 'analyzer_'+self.identifier,
+        db.command("createRole", self.identifier,
             privileges=[{
                "resource": { "db": "analysis", "collection": self.identifier },
                "actions": ["find", "insert", "remove", "update", "createIndex"]
@@ -40,8 +42,8 @@ class AgentBase:
         )
 
         # create user
-        db.add_user("analyzer_"+self.identifier, password=self.token,
-            roles=[{"role": "analyzer_"+self.identifier, "db": "analysis" },
+        db.add_user(self.identifier, password=self.token,
+            roles=[{"role": self.identifier, "db": "analysis" },
                    {"role": "read", "db": "observations"},
                    {"role": "read", "db": "uploads"}])
 
@@ -50,8 +52,8 @@ class AgentBase:
     def _delete_user(self):
         db = self.mongo.analysis
 
-        db.remove_user("analyzer_"+self.identifier)
-        db.command("dropRole", "analyzer_"+self.identifier)
+        db.remove_user(self.identifier)
+        db.command("dropRole", self.identifier)
 
         self.stack.remove(self._delete_user)
         print("user deleted")
@@ -59,7 +61,7 @@ class AgentBase:
     def _create_collection(self):
         db = self.mongo.analysis
 
-        db._create_collection(self.identifier)
+        db.create_collection(self.identifier)
 
         self.stack.append(self._delete_collection)
         print("collection created")
@@ -85,23 +87,24 @@ class AgentBase:
 
         print("Cleanup done.")
 
-    def _handle_request(self, req):
-        if req['req'] == 'get_mongo':
+    def _handle_request(self, action, payload):
+        if action == 'get_info':
             return {
-                'url': 'mongodb://{}:{}@localhost/analysis'.format('analyzer_'+self.identifier, self.token),
+                'url': 'mongodb://{}:{}@localhost/analysis'.format(self.identifier, self.token),
                 'output': ('analysis', self.identifier),
                 'observations': ('observations', 'observations'),
-                'metadata': ('uploads', 'uploads')
+                'metadata': ('uploads', 'uploads'),
+                'execution_params': self.execution_params
             }
-        elif req['req'] == 'get_spark':
+        elif action == 'get_spark':
             return {
-                'path': '../spark-1.6.0-bin-hadoop2.6/',
+                'path': '/home/elio/spark-1.6.0-bin-hadoop2.6/',
                 'config': {
                     "spark.master": "local[*]",
                     "spark.app.name": "testapp"
                 }
             }
-        elif req['req'] == 'get_distributed':
+        elif action == 'get_distributed':
             return {'address': '127.0.0.1:8706'}
         else:
             return {'error': 'unknown request'}
@@ -110,10 +113,12 @@ class AgentBase:
         raise NotImplementedError()
 
 class OnlineAgent(AgentBase):
-    def __init__(self, identifier, token,
+    def __init__(self, online_id, token,
                  mongo: MongoClient):
 
-        super().__init__(identifier, token, mongo)
+        super().__init__('online_'+str(online_id), token, {}, mongo)
+
+        self.online_id = online_id
 
         try:
             self._create_collection()
@@ -138,15 +143,23 @@ class OnlineAgent(AgentBase):
 
 class ScriptAgent(AgentBase):
     def __init__(self, analyzer_id,
-                 credentials: Credentials,
+                 action_id, token,
+                 execution_params: dict,
+                 host, port,
                  cmdline: Sequence[str],
+                 cwd: str,
                  mongo: MongoClient):
-        super().__init__(credentials.identifier, credentials.token, mongo)
+
+        super().__init__('script_'+str(action_id), token, execution_params, mongo)
 
         self.analyzer_id = analyzer_id
+        self.action_id = action_id
         self.cmdline = cmdline
+        self.cwd = cwd
 
-        self.credentials = credentials
+        # inherit current process environment (default popen behavior) and add credentials
+        self.env = dict(os.environ)
+        self.env['PTO_CREDENTIALS'] = json.dumps({'identifier': self.identifier, 'token': token, 'host': host, 'port': port})
 
         self.analyzer_stdout = []
         self.analyzer_stderr = []
@@ -184,18 +197,16 @@ class ScriptAgent(AgentBase):
         print("analyzer freed")
 
     async def execute(self):
-        # assuming AnalyzerServer is run by supervisor
+        print("executing analyzer...")
 
-        # inherit current process environment (default behavior) and add credentials
-        env = dict(os.environ)
-
-        env['PTO_CREDENTIALS'] = json.dumps(self.credentials._asdict())
-
-        proc = await asyncio.create_subprocess_exec(*self.cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        proc = await asyncio.create_subprocess_exec(*self.cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env, cwd=self.cwd)
 
         stdout, stderr = await proc.communicate()
         self.analyzer_stdout = stdout.decode()
         self.analyzer_stderr = stderr.decode()
+
+        print(self.analyzer_stdout)
+        print(self.analyzer_stderr)
 
         print("retcode", proc.returncode)
 

@@ -17,18 +17,18 @@ class ContextError(Exception):
     pass
 
 class AnalyzerContext():
-    def __init__(self, bootstrap: Bootstrap=None):
+    def __init__(self, credentials: dict=None):
         # environment variable overrides parameter
         if 'PTO_CREDENTIALS' in os.environ:
-            bootstrap = json.loads(os.environ['PTO_CREDENTIALS'])
+            credentials = json.loads(os.environ['PTO_CREDENTIALS'])
 
-        if bootstrap is None:
+        if credentials is None:
             raise ConfigNotFound()
 
-        self.supervisor = SupervisorClient(bootstrap.host, bootstrap.port, bootstrap.identifier, bootstrap.token)
+        self.supervisor = SupervisorClient(credentials)
 
-        # authenticate and get mongo credentials
-        ans = self.supervisor.request('get_mongo')
+        # authenticate and get mongodb login data
+        ans = self.supervisor.request('get_info')
         if 'error' in ans:
             raise ContextError(ans['error'])
 
@@ -43,8 +43,11 @@ class AnalyzerContext():
         self.metadata_db = self.mongo[ans['metadata'][0]]
         self.metadata = self.metadata_db[ans['metadata'][1]]
 
+        self.parameters = ans['execution_params']
+
         self._spark_context = None
         self._distributed_executor = None
+
 
     def get_spark(self):
         if self._spark_context is None:
