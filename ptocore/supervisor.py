@@ -1,18 +1,18 @@
 import asyncio
 import json
 import traceback
+from typing import Sequence
 
 import os
-from typing import Sequence, Mapping
 from functools import partial
-
 from pymongo import MongoClient
 from pymongo.collection import Collection
 
 from .agent import OnlineAgent, ScriptAgent
-from jsonprotocol import JsonProtocol
-from analyzerstate import AnalyzerState
-from mongoutils import AutoIncrementFactory
+from .analyzerstate import AnalyzerState
+from .jsonprotocol import JsonProtocol
+from .mongoutils import AutoIncrementFactory
+
 
 class SupervisorServer(JsonProtocol):
     def __init__(self, supervisor):
@@ -34,43 +34,6 @@ class SupervisorServer(JsonProtocol):
 
         ans = self.supervisor.analyzer_request(identifier, token, action, payload)
         self.send(ans)
-
-
-class SupervisorClient(JsonProtocol):
-    """
-    Simple request-answer based client.
-    """
-    def __init__(self, credentials):
-        self.identifier = credentials['identifier']
-        self.token = credentials['token']
-
-        # get fresh and empty event loop
-        self.loop = asyncio.new_event_loop()
-
-        # connect to server
-        coro = self.loop.create_connection(lambda: self, credentials['host'], credentials['port'])
-        self.loop.run_until_complete(coro)
-
-    def request(self, action: str, payload: dict = None):
-        msg = {
-            'identifier': self.identifier,
-            'token': self.token,
-            'action': action,
-            'payload': payload
-        }
-
-        # send request
-        self.send(msg)
-
-        # wait until self.received() is called and _current contains the response
-        # NOTE: obviously this pattern will fail if the server doesn't send exactly the same number of
-        # answers than the number of received requests.
-        self.loop.run_forever()
-        return self._current
-
-    def received(self, obj):
-        self._current = obj
-        self.loop.stop()
 
 
 class Supervisor:

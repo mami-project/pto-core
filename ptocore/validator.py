@@ -1,12 +1,11 @@
-from typing import Sequence, Tuple
 from datetime import datetime
-
-from pymongo.collection import Collection
-from pymongo.operations import UpdateOne, InsertOne
-from bson import CodecOptions
-from collections import OrderedDict
+from typing import Sequence, Tuple
 
 import re
+from bson import CodecOptions
+from collections import OrderedDict
+from pymongo.collection import Collection
+from pymongo.operations import UpdateOne, InsertOne
 
 from . import valuechecks
 

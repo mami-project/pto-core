@@ -1,9 +1,9 @@
-import os
 import json
-from jsonprotocol import JsonProtocol
-from pymongo import MongoClient
-from supervisor import SupervisorClient
+import asyncio
 
+import os
+from pymongo import MongoClient
+from .jsonprotocol import JsonProtocol
 
 class ConfigNotFound(Exception):
     pass
@@ -15,6 +15,44 @@ class MessageNotUnderstood(Exception):
 
 class ContextError(Exception):
     pass
+
+
+class SupervisorClient(JsonProtocol):
+    """
+    Simple request-answer based client.
+    """
+    def __init__(self, credentials):
+        self.identifier = credentials['identifier']
+        self.token = credentials['token']
+
+        # get fresh and empty event loop
+        self.loop = asyncio.new_event_loop()
+
+        # connect to server
+        coro = self.loop.create_connection(lambda: self, credentials['host'], credentials['port'])
+        self.loop.run_until_complete(coro)
+
+    def request(self, action: str, payload: dict = None):
+        msg = {
+            'identifier': self.identifier,
+            'token': self.token,
+            'action': action,
+            'payload': payload
+        }
+
+        # send request
+        self.send(msg)
+
+        # wait until self.received() is called and _current contains the response
+        # NOTE: obviously this pattern will fail if the server doesn't send exactly the same number of
+        # answers than the number of received requests.
+        self.loop.run_forever()
+        return self._current
+
+    def received(self, obj):
+        self._current = obj
+        self.loop.stop()
+
 
 class AnalyzerContext():
     def __init__(self, credentials: dict=None):

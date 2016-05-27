@@ -1,8 +1,8 @@
 from pymongo import MongoClient
 from pymongo.collection import Collection
 
-import sensitivity
-from analyzerstate import AnalyzerState
+from . import sensitivity
+from .analyzerstate import AnalyzerState
 
 
 class Sensor:

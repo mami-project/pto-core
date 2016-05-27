@@ -1,10 +1,10 @@
-from typing import Tuple, Sequence, Callable
 from datetime import datetime, timedelta
+from typing import Tuple, Sequence, Callable
 
 import pymongo
 from pymongo.collection import Collection
 
-from timeline import Timeline
+from ptocore.timeline import Timeline
 
 Interval = Tuple[datetime, datetime]
 
