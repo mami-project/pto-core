@@ -75,12 +75,12 @@ class Supervisor:
         agent.teardown()
         del self.agents[agent.identifier]
 
-    def create_online_agent(self):
+    def create_online_agent(self, execution_params: dict):
         print("creating online supervisor")
         online_id = self._online_id_creator()
         token = os.urandom(16).hex()
 
-        agent = OnlineAgent(online_id, token, self.mongo)
+        agent = OnlineAgent(online_id, token, execution_params, self.mongo)
 
         self.agents[agent.identifier] = agent
 
@@ -143,7 +143,8 @@ def main():
     sup = Supervisor(mongo, mongo.analysis.analyzers, mongo.analysis.idfactory, loop)
 
     # create online supervisor and print account details
-    credentials, agent = sup.create_online_agent()
+    from datetime import datetime
+    credentials, agent = sup.create_online_agent({'max_action_id': -1, 'timespans': [(datetime.min, datetime.max)]})
     print(json.dumps(credentials))
 
     asyncio.ensure_future(sup.run())

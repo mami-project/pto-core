@@ -114,9 +114,10 @@ class AgentBase:
 
 class OnlineAgent(AgentBase):
     def __init__(self, online_id, token,
+                 execution_params: dict,
                  mongo: MongoClient):
 
-        super().__init__('online_'+str(online_id), token, {}, mongo)
+        super().__init__('online_'+str(online_id), token, execution_params, mongo)
 
         self.online_id = online_id
 

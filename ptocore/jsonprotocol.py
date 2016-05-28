@@ -1,5 +1,14 @@
 import asyncio
 import json
+from datetime import datetime
+
+class DatetimeJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+
+        # Let the base class default method raise the TypeError
+        return json.JSONEncoder.default(self, obj)
 
 class JsonProtocol(asyncio.Protocol):
     MAX_BUFSIZE = 1024*1024*20
@@ -29,7 +38,7 @@ class JsonProtocol(asyncio.Protocol):
                 self.received(obj)
 
     def send(self, obj):
-        s = json.dumps(obj) + "\n"
+        s = json.dumps(obj, cls=DatetimeJSONEncoder) + "\n"
         return self.transport.write(s.encode())
 
     def received(self, obj):

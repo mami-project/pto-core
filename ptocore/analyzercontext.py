@@ -1,7 +1,9 @@
 import json
 import asyncio
-
 import os
+from collections import defaultdict
+from dateutil.parser import parse
+
 from pymongo import MongoClient
 from .jsonprotocol import JsonProtocol
 
@@ -81,7 +83,8 @@ class AnalyzerContext():
         self.metadata_db = self.mongo[ans['metadata'][0]]
         self.metadata = self.metadata_db[ans['metadata'][1]]
 
-        self.parameters = ans['execution_params']
+        self.max_action_id = ans['execution_params']['max_action_id']
+        self.timespans = [(parse(timespan[0]), parse(timespan[1])) for timespan in ans['execution_params']['timespans']]
 
         self._spark_context = None
         self._distributed_executor = None
@@ -114,6 +117,40 @@ class AnalyzerContext():
             self._spark_context = pyspark.SparkContext()
 
         return self._spark_context
+
+    def spark_get_uploads(self, query):
+        sc = self.get_spark()
+
+        assert('complete' in query and query['complete'] is True)
+
+        uploads = self.metadata.find(query)
+
+        seqfiles = defaultdict(list)
+        for upload in uploads:
+            seqfiles[upload['path']].append(upload)
+
+        mms = None
+
+        # build up chain of operations
+        for seqfile, uploads in seqfiles.items():
+            # create rdd of the metadata with seqKey: metadata
+            metadata = sc.parallelize(uploads).map(lambda upload: (upload['seqKey'], upload))
+
+            # sequence file is a binary key-value store. by definition the measurements are stored with seqKey as key.
+            textfiles = sc.sequenceFile(seqfile).map(lambda kv: (kv[0].decode('utf-8'), kv[1].decode('utf-8')))
+
+            # this inner join does two things:
+            # 1. keep only measurements we need
+            # 2. put metadata alongside each measurement
+            mm = metadata.join(textfiles)
+
+            if mms is None:
+                mms = mm
+            else:
+                mms.union(mm)
+
+        return mms
+
 
     def get_distributed(self):
         if self._distributed_executor is None:
