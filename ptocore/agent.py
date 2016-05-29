@@ -161,9 +161,9 @@ class ScriptAgent(AgentBase):
     def __init__(self, analyzer_id,
                  action_id, token,
                  host, port,
-                 input_formats,
-                 input_types,
-                 output_types,
+                 input_formats: Sequence[str],
+                 input_types: Sequence[str],
+                 output_types: Sequence[str],
                  cmdline: Sequence[str],
                  cwd: str,
                  mongo: MongoClient):
@@ -228,8 +228,10 @@ class ScriptAgent(AgentBase):
 
             self.result_max_action_id = max_action_id
             self.result_timespans = output_timespans
+
+            return {'accepted': True}
         else:
-            super()._handle_request(action, payload)
+            return super()._handle_request(action, payload)
 
     def _load_analyzer(self):
         self.stack.append(self._free_analyzer)

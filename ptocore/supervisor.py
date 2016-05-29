@@ -117,8 +117,8 @@ class Supervisor:
             token = os.urandom(16).hex()
 
             agent = ScriptAgent(analyzer['_id'], action_id, token, self.host, self.port,
-                                analyzer['command_line'], analyzer['working_dir'],
-                                analyzer['input_formats'], analyzer['input_types'], analyzer['output_types'], self.mongo)
+                                analyzer['input_formats'], analyzer['input_types'], analyzer['output_types'],
+                                analyzer['command_line'], analyzer['working_dir'], self.mongo)
 
             self.agents[agent.identifier] = agent
 

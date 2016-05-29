@@ -32,6 +32,8 @@ class SupervisorClient(JsonProtocol):
         self.identifier = credentials['identifier']
         self.token = credentials['token']
 
+        self._current = None
+
         # get fresh and empty event loop
         self.loop = asyncio.new_event_loop()
 
