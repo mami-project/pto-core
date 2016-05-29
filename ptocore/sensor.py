@@ -33,12 +33,10 @@ class Sensor:
                 # TODO set 'stalled_reason' = "input unstable" in analyzers_coll
                 continue
 
-            max_action_id, timespans = sensitivity.basic(self.action_log, analyzer['_id'], analyzer['input_types'], analyzer['input_formats'])
-            print("params: ", max_action_id, timespans)
-            if len(timespans) > 0:
+            if sensitivity.any_changes(self.action_log, analyzer['_id'],
+                                       analyzer['input_formats'], analyzer['input_types']):
                 # okay let's do this. change state of analyzer to planned.
-                self.analyzers_state.transition_to_planned(analyzer['_id'],
-                                                           {'max_action_id': max_action_id, 'timespans': timespans})
+                self.analyzers_state.transition_to_planned(analyzer['_id'])
 
                 # next time we call blocked_types() and unstable_types(), the input and output types of
                 # this analyzer are now also showing up there.

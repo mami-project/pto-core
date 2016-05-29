@@ -2,10 +2,15 @@ import json
 import asyncio
 import os
 from collections import defaultdict
-from dateutil.parser import parse
+from datetime import datetime
+from typing import Sequence, Tuple
 
 from pymongo import MongoClient
+
 from .jsonprotocol import JsonProtocol
+from . import validator
+
+Interval = Tuple[datetime, datetime]
 
 class ConfigNotFound(Exception):
     pass
@@ -65,9 +70,10 @@ class AnalyzerContext():
         if credentials is None:
             raise ConfigNotFound()
 
+        # connection to supervisor
         self.supervisor = SupervisorClient(credentials)
 
-        # authenticate and get mongodb login data
+        # authenticate and get mongodb details
         ans = self.supervisor.request('get_info')
         if 'error' in ans:
             raise ContextError(ans['error'])
@@ -83,12 +89,22 @@ class AnalyzerContext():
         self.metadata_db = self.mongo[ans['metadata'][0]]
         self.metadata = self.metadata_db[ans['metadata'][1]]
 
-        self.max_action_id = ans['execution_params']['max_action_id']
-        self.timespans = [(parse(timespan[0]), parse(timespan[1])) for timespan in ans['execution_params']['timespans']]
+        # get this analyzer's specification
+        self.analyzer_id = ans['analyzer_id']
+        self.action_id = ans['action_id']
+        self.input_formats = ans['input_formats']
+        self.input_types = ans['input_types']
+        self.output_types = ans['output_types']
 
+        # other contexts loaded on demand
         self._spark_context = None
         self._distributed_executor = None
 
+    def set_result_info(self, max_action_id: int, timespans: Sequence[Interval]):
+        ans = self.supervisor.request('set_result_info', {'max_action_id': max_action_id,
+                                                          'timespans': timespans})
+        if 'error' in ans:
+            raise ContextError(ans['error'])
 
     def get_spark(self):
         if self._spark_context is None:
@@ -163,12 +179,6 @@ class AnalyzerContext():
 
         return self._distributed_executor
 
-    def validate(self):
-        # TODO: implement
-        # production: supervisor will revoke user rights and check if disconnected
-        # ans = self.supervisor.request('validate')
-
-        # close if in production mode
-        # self.mongo.close()
-
-        raise NotImplementedError()
+    def validate(self, timespans: Sequence[Interval], output_types: Sequence[str], abort_max_errors=100):
+        return validator.validate(self.analyzer_id, self.action_id, timespans,
+                                  self.output, output_types, abort_max_errors)

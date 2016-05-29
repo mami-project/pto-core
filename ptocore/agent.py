@@ -1,6 +1,6 @@
 import asyncio
-from typing import Sequence, Callable, Any
-from functools import partial
+from typing import Sequence, Tuple
+from datetime import datetime
 import traceback
 import json
 import os
@@ -8,18 +8,26 @@ import subprocess
 
 from pymongo import MongoClient
 
+Interval = Tuple[datetime, datetime]
 
 class AgentError(Exception):
     pass
 
 class AgentBase:
     # TODO: check mongo return values & exceptions
-    def __init__(self, identifier, token, execution_params, mongo: MongoClient):
+    def __init__(self, identifier, token, mongo: MongoClient, analyzer_id, action_id,
+                 input_formats: Sequence[str], input_types: Sequence[str], output_types: Sequence[str]):
+        self.analyzer_id = analyzer_id
+        self.action_id = action_id
         self.identifier = identifier
+
         self.token = token
         self.mongo = mongo
 
-        self.execution_params = execution_params
+        self.input_formats = input_formats
+        self.input_types = input_types
+        self.output_types = output_types
+
 
         # a list of cleanup coroutines for reverting in case of error
         self.stack = []
@@ -35,7 +43,7 @@ class AgentBase:
         # create custom role: only readWrite on own collection
         db.command("createRole", self.identifier,
             privileges=[{
-               "resource": { "db": "analysis", "collection": self.identifier },
+               "resource": {"db": "analysis", "collection": self.identifier},
                "actions": ["find", "insert", "remove", "update", "createIndex"]
             }],
             roles=[]
@@ -43,7 +51,7 @@ class AgentBase:
 
         # create user
         db.add_user(self.identifier, password=self.token,
-            roles=[{"role": self.identifier, "db": "analysis" },
+            roles=[{"role": self.identifier, "db": "analysis"},
                    {"role": "read", "db": "observations"},
                    {"role": "read", "db": "uploads"}])
 
@@ -87,14 +95,18 @@ class AgentBase:
 
         print("Cleanup done.")
 
-    def _handle_request(self, action, payload):
+    def _handle_request(self, action: str, payload: dict):
         if action == 'get_info':
             return {
                 'url': 'mongodb://{}:{}@localhost/analysis'.format(self.identifier, self.token),
                 'output': ('analysis', self.identifier),
                 'observations': ('observations', 'observations'),
                 'metadata': ('uploads', 'uploads'),
-                'execution_params': self.execution_params
+                'analyzer_id': self.analyzer_id,
+                'action_id': self.action_id,
+                'input_formats': self.input_formats,
+                'input_types': self.input_types,
+                'output_types': self.output_types
             }
         elif action == 'get_spark':
             return {
@@ -109,15 +121,18 @@ class AgentBase:
         else:
             return {'error': 'unknown request'}
 
+
     def teardown(self):
         raise NotImplementedError()
 
 class OnlineAgent(AgentBase):
-    def __init__(self, online_id, token,
-                 execution_params: dict,
+    def __init__(self, online_id,
+                 token,
                  mongo: MongoClient):
 
-        super().__init__('online_'+str(online_id), token, execution_params, mongo)
+        identifier = 'online_'+str(online_id)
+
+        super().__init__(identifier, token, mongo, identifier, -1, [], [], [])
 
         self.online_id = online_id
 
@@ -145,20 +160,24 @@ class OnlineAgent(AgentBase):
 class ScriptAgent(AgentBase):
     def __init__(self, analyzer_id,
                  action_id, token,
-                 execution_params: dict,
                  host, port,
+                 input_formats,
+                 input_types,
+                 output_types,
                  cmdline: Sequence[str],
                  cwd: str,
                  mongo: MongoClient):
 
-        super().__init__('script_'+str(action_id), token, execution_params, mongo)
+        super().__init__('script_'+str(action_id), token, mongo,
+                         analyzer_id, action_id, input_formats, input_types, output_types)
 
-        self.analyzer_id = analyzer_id
-        self.action_id = action_id
+        self.result_timespans = None
+        self.result_max_action_id = None
+
         self.cmdline = cmdline
         self.cwd = cwd
 
-        # inherit current process environment (default popen behavior) and add credentials
+        # inherit current process environment (this is the default popen behavior) and add credentials
         self.env = dict(os.environ)
         self.env['PTO_CREDENTIALS'] = json.dumps({'identifier': self.identifier, 'token': token, 'host': host, 'port': port})
 
@@ -188,6 +207,29 @@ class ScriptAgent(AgentBase):
         else:
             assert(len(self.stack) == 0)
 
+    def _handle_request(self, action: str, payload: dict):
+        if action == 'set_result_info':
+            try:
+                max_action_id = payload['max_action_id']
+                output_timespans = payload['timespans']
+            except KeyError:
+                return {'error': "one or more expected fields of {'timespans', 'max_action_id'} not found."}
+
+            if max_action_id < 0:
+                return {'error': 'max_action_id < 0 not allowed'}
+
+            if len(output_timespans) == 0:
+                return {'error': 'at least one timespan is required'}
+
+            if not all(len(timespan) == 2 and
+                       isinstance(timespan[0], datetime) and
+                       isinstance(timespan[1], datetime) for timespan in output_timespans):
+                return {'error': 'invalid payload format'}
+
+            self.result_max_action_id = max_action_id
+            self.result_timespans = output_timespans
+        else:
+            super()._handle_request(action, payload)
 
     def _load_analyzer(self):
         self.stack.append(self._free_analyzer)

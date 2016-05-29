@@ -1,7 +1,7 @@
 import asyncio
 import json
 import traceback
-from typing import Sequence
+from typing import Set
 
 import os
 from functools import partial
@@ -29,7 +29,7 @@ class SupervisorServer(JsonProtocol):
             payload = str(obj['payload'])
         except KeyError:
             print("request is missing one or more fields: {token, identifier, action, payload}")
-            self.send({'error': 'authentication failed, request is missing token or identifier'})
+            self.send({'error': 'request is missing one or more fields: {token, identifier, action, payload}'})
             return
 
         ans = self.supervisor.analyzer_request(identifier, token, action, payload)
@@ -75,28 +75,18 @@ class Supervisor:
         agent.teardown()
         del self.agents[agent.identifier]
 
-    def create_online_agent(self, execution_params: dict):
+    def create_online_agent(self):
         print("creating online supervisor")
         online_id = self._online_id_creator()
         token = os.urandom(16).hex()
 
-        agent = OnlineAgent(online_id, token, execution_params, self.mongo)
+        agent = OnlineAgent(online_id, token, self.mongo)
 
         self.agents[agent.identifier] = agent
 
         credentials = { 'identifier': agent.identifier, 'token': token, 'host': self.host, 'port': self.port }
 
         return credentials, agent
-
-    def create_script_agent(self, analyzer_id, execution_params: dict, cmdline: Sequence[str], cwd: str) -> ScriptAgent:
-        print("creating script supervisor")
-        action_id = self._action_id_creator()
-        token = os.urandom(16).hex()
-
-        agent = ScriptAgent(analyzer_id, action_id, token, execution_params, self.host, self.port, cmdline, cwd, self.mongo)
-        self.agents[agent.identifier] = agent
-
-        return agent
 
     def script_agent_done(self, agent: ScriptAgent, fut: asyncio.Future):
         print("script agent done")
@@ -114,15 +104,25 @@ class Supervisor:
             self.analyzers_state.transition_to_error(agent.analyzer_id, traceback.format_exc())
         else:
             # everything went well, so give to validator
-            self.analyzers_state.transition_to_executed(agent.analyzer_id)
+            self.analyzers_state.transition_to_executed(agent.analyzer_id, agent.result_max_action_id, agent.result_timespans)
 
     def check_for_work(self):
         planned = self.analyzers_state.planned_analyzers()
         print("check for work")
         for analyzer in planned:
             print("planned", analyzer)
-            agent = self.create_script_agent(analyzer['_id'], analyzer['execution_params'], analyzer['command_line'], analyzer['working_dir'])
 
+            # create agent
+            action_id = self._action_id_creator()
+            token = os.urandom(16).hex()
+
+            agent = ScriptAgent(analyzer['_id'], action_id, token, self.host, self.port,
+                                analyzer['command_line'], analyzer['working_dir'],
+                                analyzer['input_formats'], analyzer['input_types'], analyzer['output_types'], self.mongo)
+
+            self.agents[agent.identifier] = agent
+
+            # change analyzer state
             self.analyzers_state.transition_to_executing(agent.analyzer_id, agent.identifier)
 
             # schedule for execution
@@ -143,8 +143,7 @@ def main():
     sup = Supervisor(mongo, mongo.analysis.analyzers, mongo.analysis.idfactory, loop)
 
     # create online supervisor and print account details
-    from datetime import datetime
-    credentials, agent = sup.create_online_agent({'max_action_id': -1, 'timespans': [(datetime.min, datetime.max)]})
+    credentials, agent = sup.create_online_agent()
     print(json.dumps(credentials))
 
     asyncio.ensure_future(sup.run())

@@ -26,6 +26,9 @@ def changes_since(action_log: Collection, analyzer_id: str, input_formats: Seque
 
     return last_run_id, changes
 
+def any_changes(action_log: Collection, analyzer_id: str, input_formats: Sequence[str], input_types: Sequence[str]) -> bool:
+    _, changes = changes_since(action_log, analyzer_id, input_formats, input_types)
+    return changes.count() > 0
 
 def basic(action_log: Collection, analyzer_id: str, input_formats: Sequence[str], input_types: Sequence[str]) -> Tuple[int, Sequence[Interval]]:
     """

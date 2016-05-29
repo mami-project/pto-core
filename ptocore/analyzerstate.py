@@ -1,5 +1,10 @@
-from pymongo.collection import Collection
+from datetime import datetime
+from typing import Tuple, Sequence
 from itertools import chain
+
+from pymongo.collection import Collection
+
+Interval = Tuple[datetime, datetime]
 
 running_states = ['planned', 'executing', 'validating']
 passive_states = ['sensing', 'disabled', 'error']
@@ -52,10 +57,10 @@ class AnalyzerState:
         """
         return set(chain.from_iterable(doc['output_types'] for doc in self.running_analyzers()))
 
-    def transition_to_planned(self, analyzer_id, execution_params):
+    def transition_to_planned(self, analyzer_id):
         doc = self.analyzers_coll.find_one_and_update(
             {'_id': analyzer_id, 'state': 'sensing'},
-            {'$set': {'state': 'planned', 'execution_params': execution_params}})
+            {'$set': {'state': 'planned'}})
 
         return doc is not None
 
@@ -66,10 +71,11 @@ class AnalyzerState:
 
         return doc is not None
 
-    def transition_to_executed(self, analyzer_id):
+    def transition_to_executed(self, analyzer_id, max_action_id: int, timespans: Sequence[Interval]):
         doc = self.analyzers_coll.find_one_and_update(
             {'_id': analyzer_id, 'state': 'executing'},
-            {'$set': {'state': 'executed'}})
+            {'$set': {'state': 'executed',
+                      'execution_result': {'max_action_id': max_action_id, 'timespans': timespans}}})
 
         return doc is not None
 
@@ -84,7 +90,7 @@ class AnalyzerState:
         doc = self.analyzers_coll.find_one_and_update(
             {'_id': analyzer_id, 'state': {'$in': ['error', 'disabled', 'finalizing']}},
             {'$set': {'state': 'sensing'},
-             '$unset': {'action_id': None, 'error_reason': None, 'execution_params': None, 'validation_params': None}})
+             '$unset': {'action_id': None, 'error_reason': None, 'validation_params': None}})
 
         return doc is not None
 

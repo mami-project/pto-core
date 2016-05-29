@@ -14,6 +14,8 @@ Interval = Tuple[datetime, datetime]
 FIELDS = {'_id', 'action_id', 'deprecated', 'condition', 'time', 'path', 'analyzer_id', 'sources', 'value'}
 
 codec_opts = CodecOptions(document_class=OrderedDict)
+
+
 def collection_ensure_order(coll: Collection):
     return coll.with_options(codec_options=codec_opts)
 
@@ -62,9 +64,9 @@ def check(cond, obsid, reason):
 def validate(
         analyzer_id: int,
         action_id: int,
-        timespan: Tuple[datetime, datetime],
+        timespans: Sequence[Tuple[datetime, datetime]],
         temporary_coll: Collection,
-        outputs: Sequence[str],
+        output_types: Sequence[str],
         abort_max_errors=100):
 
     errors = []
@@ -73,9 +75,14 @@ def validate(
     try:
         check(isinstance(analyzer_id, int), None, 'param analyzer_id must be int')
         check(isinstance(action_id, int), None, 'parameter action_id  must be int')
-        check(len(timespan) == 2 and isinstance(timespan[0], datetime) and
-              isinstance(timespan[1], datetime), None, 'parameter timespan must be 2-tuple of datetime')
-        check(all(isinstance(output, str) for output in outputs), None, 'parameter outputs must be list of str')
+
+        check(len(timespans) > 0, None, 'no timespans given')
+
+        check(all(len(timespan) == 2 and isinstance(timespan[0], datetime) and
+              isinstance(timespan[1], datetime) for timespan in timespans),
+              None, 'parameter timespans must be sequence of 2-tuple of datetime')
+
+        check(all(isinstance(output, str) for output in output_types), None, 'parameter output_types must be list of str')
     except ValidationError as e:
         return 0, [(e.obsid, e.reason)]
 
@@ -98,17 +105,17 @@ def validate(
 
             # check that condition is defined in outputs
             condition = doc['condition']
-            check(condition in outputs, obsid, 'condition not declared')
+            check(condition in output_types, obsid, 'condition not declared in output_types')
 
             # check that deprecation value is correct
             check(doc['deprecated'] is False, obsid, 'deprecation setting incorrect')
 
-            # check that time is within timespan
+            # check that time is within any timespan
             time = doc['time']
             if isinstance(time, dict):
-                check(timespan[0] <= time['from'] <= time['to'] <= timespan[1], obsid, 'timespan')
+                check(any(timespan[0] <= time['from'] <= time['to'] <= timespan[1] for timespan in timespans), obsid, 'timespan')
             else:
-                check(timespan[0] <= time <= timespan[1], obsid, 'time')
+                check(any(timespan[0] <= time <= timespan[1] for timespan in timespans), obsid, 'timespan')
 
             # check that path consists only of valid path elements
             check(isinstance(doc['path'], list), obsid, 'path field is not a list')
@@ -171,13 +178,13 @@ def find_counterpart(doc, other_coll: Collection):
 
 def commit(analyzer_id: int,
            action_id: int,
-           timespan: Tuple[datetime, datetime],
+           timespans: Sequence[Interval],
            temporary_coll: Collection,
            output_coll: Collection,
-           outputs: Sequence[str],
+           output_types: Sequence[str],
            abort_max_errors=100):
 
-    errors = validate(analyzer_id, action_id, timespan, temporary_coll, outputs, abort_max_errors)
+    errors = validate(analyzer_id, action_id, timespans, temporary_coll, output_types, abort_max_errors)
 
     if len(errors) > 0:
         return errors
@@ -185,15 +192,18 @@ def commit(analyzer_id: int,
     # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
     # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
 
+    def create_timespan_subquery(timespan: Interval):
+        return {
+            {'time': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+            {'$and': [
+                {'time.from': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+                {'time.to': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}}]
+            }
+        }
+
     # query to find deprecation candidates
     candidates_query = {'analyzer_id': analyzer_id,
-                        '$or': [
-                        {'time':    {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                            {'$and': [
-                            {'time.from':   {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                            {'time.to':     {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                            ]}
-                        ]}
+                        '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
     # 1. first deprecate all candidates and update action_id
     output_coll.update_many(candidates_query, {'deprecated': True, 'action_id': action_id})
