@@ -26,7 +26,7 @@ class SupervisorServer(JsonProtocol):
             identifier = str(obj['identifier'])
             token = str(obj['token'])
             action = str(obj['action'])
-            payload = str(obj['payload'])
+            payload = obj['payload']
         except KeyError:
             print("request is missing one or more fields: {token, identifier, action, payload}")
             self.send({'error': 'request is missing one or more fields: {token, identifier, action, payload}'})
@@ -101,10 +101,10 @@ class Supervisor:
             traceback.print_exc()
 
             # set state accordingly
-            self.analyzers_state.transition_to_error(agent.analyzer_id, traceback.format_exc())
+            self.analyzers_state.transition_to_error(agent.analyzer_id, "error when exeucting analyzer:\n"+traceback.format_exc())
         else:
             # everything went well, so give to validator
-            self.analyzers_state.transition_to_executed(agent.analyzer_id, agent.result_max_action_id, agent.result_timespans)
+            self.analyzers_state.transition_to_executed(agent.analyzer_id, agent.identifier, agent.result_max_action_id, agent.result_timespans)
 
     def check_for_work(self):
         planned = self.analyzers_state.planned_analyzers()
@@ -123,7 +123,7 @@ class Supervisor:
             self.agents[agent.identifier] = agent
 
             # change analyzer state
-            self.analyzers_state.transition_to_executing(agent.analyzer_id, agent.identifier)
+            self.analyzers_state.transition_to_executing(agent.analyzer_id, agent.action_id)
 
             # schedule for execution
             task = asyncio.ensure_future(agent.execute())

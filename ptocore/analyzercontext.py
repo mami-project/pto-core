@@ -9,6 +9,7 @@ from pymongo import MongoClient
 
 from .jsonprotocol import JsonProtocol
 from . import validator
+from .sensitivity import Sensitivity
 
 Interval = Tuple[datetime, datetime]
 
@@ -82,14 +83,14 @@ class AnalyzerContext():
 
         self.mongo = MongoClient(ans['url'])
 
-        self.output_db = self.mongo[ans['output'][0]]
-        self.output = self.output_db[ans['output'][1]]
+        def get_coll(val):
+            return self.mongo[val[0]][val[1]]
 
-        self.observations_db = self.mongo[ans['observations'][0]]
-        self.observations = self.observations_db[ans['observations'][1]]
-
-        self.metadata_db = self.mongo[ans['metadata'][0]]
-        self.metadata = self.metadata_db[ans['metadata'][1]]
+        self.output = get_coll(ans['output'])
+        self.output_url = ans['output_url']
+        self.observations = get_coll(ans['observations'])
+        self.metadata = get_coll(ans['metadata'])
+        self.action_log = get_coll(ans['action_log'])
 
         # get this analyzer's specification
         self.analyzer_id = ans['analyzer_id']
@@ -98,13 +99,15 @@ class AnalyzerContext():
         self.input_types = ans['input_types']
         self.output_types = ans['output_types']
 
+        self.sensitivity = Sensitivity(self.action_log, self.analyzer_id, self.input_formats, self.input_types)
+
         # other contexts loaded on demand
         self._spark_context = None
         self._distributed_executor = None
 
     def set_result_info(self, max_action_id: int, timespans: Sequence[Interval]):
-        ans = self.supervisor.request('set_result_info', {'max_action_id': max_action_id,
-                                                          'timespans': timespans})
+        timespans_str = [(start_date.isoformat(), end_date.isoformat()) for start_date, end_date in timespans]
+        ans = self.supervisor.request('set_result_info', {'max_action_id': max_action_id, 'timespans': timespans_str})
         if 'error' in ans:
             raise ContextError(ans['error'])
 
@@ -140,6 +143,7 @@ class AnalyzerContext():
         sc = self.get_spark()
 
         assert('complete' in query and query['complete'] is True)
+        assert('action_id' in query)
 
         uploads = self.metadata.find(query)
 
@@ -147,7 +151,7 @@ class AnalyzerContext():
         for upload in uploads:
             seqfiles[upload['path']].append(upload)
 
-        mms = None
+        mms = sc.emptyRDD()
 
         # build up chain of operations
         for seqfile, uploads in seqfiles.items():
@@ -162,10 +166,7 @@ class AnalyzerContext():
             # 2. put metadata alongside each measurement
             mm = metadata.join(textfiles)
 
-            if mms is None:
-                mms = mm
-            else:
-                mms.union(mm)
+            mms = mms.union(mm)
 
         return mms
 

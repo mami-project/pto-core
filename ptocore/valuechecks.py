@@ -25,4 +25,6 @@ checks = {
     "udp-rtt-max": partial(rangecheck, datatype=float, min=0),
     "tcp-rtt-min": partial(rangecheck, datatype=float, min=0),
     "udp-rtt-min": partial(rangecheck, datatype=float, min=0),
+    "udp-rtt-median": partial(rangecheck, datatype=float),
+    "tcp-rtt-median": partial(rangecheck, datatype=float)
 }

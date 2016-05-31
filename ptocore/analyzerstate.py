@@ -45,6 +45,9 @@ class AnalyzerState:
     def planned_analyzers(self):
         return self.analyzers_coll.find({'state': 'planned'})
 
+    def executed_analyzers(self):
+        return self.analyzers_coll.find({'state': 'executed'})
+
     def blocked_types(self):
         """
         Determines a list of observation types that are in the input specification of at least one running analyzer.
@@ -71,11 +74,11 @@ class AnalyzerState:
 
         return doc is not None
 
-    def transition_to_executed(self, analyzer_id, max_action_id: int, timespans: Sequence[Interval]):
+    def transition_to_executed(self, analyzer_id, temporary_coll_name: str, max_action_id: int, timespans: Sequence[Interval]):
         doc = self.analyzers_coll.find_one_and_update(
             {'_id': analyzer_id, 'state': 'executing'},
             {'$set': {'state': 'executed',
-                      'execution_result': {'max_action_id': max_action_id, 'timespans': timespans}}})
+                      'execution_result': {'max_action_id': max_action_id, 'timespans': timespans, 'temporary_coll': temporary_coll_name}}})
 
         return doc is not None
 
@@ -94,7 +97,7 @@ class AnalyzerState:
 
         return doc is not None
 
-    def transition_to_error(self, analyzer_id, reason):
+    def transition_to_error(self, analyzer_id, reason: str):
         doc = self.analyzers_coll.find_one_and_update(
             {'_id': analyzer_id},
             {'$set': {'state': 'error', 'error_reason': reason}})

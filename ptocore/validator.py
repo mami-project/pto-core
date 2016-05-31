@@ -1,13 +1,17 @@
 from datetime import datetime
 from typing import Sequence, Tuple
+from time import sleep
 
 import re
 from bson import CodecOptions
 from collections import OrderedDict
+from pymongo import MongoClient
+from pymongo.database import Database
 from pymongo.collection import Collection
 from pymongo.operations import UpdateOne, InsertOne
 
 from . import valuechecks
+from .analyzerstate import AnalyzerState
 
 Interval = Tuple[datetime, datetime]
 
@@ -18,6 +22,7 @@ codec_opts = CodecOptions(document_class=OrderedDict)
 
 def collection_ensure_order(coll: Collection):
     return coll.with_options(codec_options=codec_opts)
+
 
 def schema_validator(analyzer_id, action_id: int, timespan: Interval, outputs: Sequence[str]):
     # extra validation needed for:
@@ -55,6 +60,21 @@ class ValidationError(Exception):
     def __repr__(self):
         return "Validation Error {}: {}".format(self.obsid, self.reason)
 
+def grouper(iterable, count):
+    iterator = iter(iterable)
+    while True:
+        lst = []
+        try:
+            for index in range(count):
+                lst.append(next(iterator))
+        except StopIteration:
+            pass
+
+        if len(lst) > 0:
+            yield lst
+        else:
+            break
+
 
 def check(cond, obsid, reason):
     if not cond:
@@ -62,7 +82,7 @@ def check(cond, obsid, reason):
 
 
 def validate(
-        analyzer_id: int,
+        analyzer_id,
         action_id: int,
         timespans: Sequence[Tuple[datetime, datetime]],
         temporary_coll: Collection,
@@ -73,10 +93,9 @@ def validate(
 
     # check arguments
     try:
-        check(isinstance(analyzer_id, int), None, 'param analyzer_id must be int')
         check(isinstance(action_id, int), None, 'parameter action_id  must be int')
 
-        check(len(timespans) > 0, None, 'no timespans given')
+        check(isinstance(timespans, list) and len(timespans) > 0, None, 'no timespans given')
 
         check(all(len(timespan) == 2 and isinstance(timespan[0], datetime) and
               isinstance(timespan[1], datetime) for timespan in timespans),
@@ -85,6 +104,8 @@ def validate(
         check(all(isinstance(output, str) for output in output_types), None, 'parameter output_types must be list of str')
     except ValidationError as e:
         return 0, [(e.obsid, e.reason)]
+    except (KeyError, TypeError) as e:
+        return 0, [(None, str(e))]
 
     temporary_ocoll = collection_ensure_order(temporary_coll)
 
@@ -131,6 +152,11 @@ def validate(
             valid_count += 1
         except ValidationError as e:
             errors.append((e.obsid, e.reason))
+
+            if len(errors) > abort_max_errors:
+                break
+        except (KeyError, TypeError) as e:
+            errors.append((None, repr(e)))
 
             if len(errors) > abort_max_errors:
                 break
@@ -184,37 +210,40 @@ def commit(analyzer_id: int,
            output_types: Sequence[str],
            abort_max_errors=100):
 
-    errors = validate(analyzer_id, action_id, timespans, temporary_coll, output_types, abort_max_errors)
+    valid_count, errors = validate(analyzer_id, action_id, timespans, temporary_coll, output_types, abort_max_errors)
 
     if len(errors) > 0:
-        return errors
+        return valid_count, errors
 
     # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
     # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
 
     def create_timespan_subquery(timespan: Interval):
-        return {
+        return {'$or': [
             {'time': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
             {'$and': [
                 {'time.from': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                {'time.to': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}}]
-            }
-        }
+                {'time.to': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}}
+            ]}
+        ]}
 
     # query to find deprecation candidates
     candidates_query = {'analyzer_id': analyzer_id,
                         '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
     # 1. first deprecate all candidates and update action_id
-    output_coll.update_many(candidates_query, {'deprecated': True, 'action_id': action_id})
+    output_coll.update_many(candidates_query, {'$set': {'deprecated': True, 'action_id': action_id}})
 
     # 2. find all observations that exist both in the output collection and in the temporary collection
     candidates = output_coll.find(candidates_query)
     pairs = ((candidate, find_counterpart(candidate, temporary_coll)) for candidate in candidates)
 
     # 3. mark all of them in the temporary collection
-    mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'output_id': pair[0]['_id']}) for pair in pairs)
-    temporary_coll.bulk_write(mark_ops)
+    mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'$set': {'output_id': pair[0]['_id']}}) for pair in pairs)
+
+    # unfortunately bulk_write does not accept iterators. in the mongodb docs, the server limit is 1000 ops.
+    for block in grouper(mark_ops, 1000):
+        temporary_coll.bulk_write(list(block))
 
     # 4. commit changes into output collection
     def create_output_ops():
@@ -223,11 +252,60 @@ def commit(analyzer_id: int,
         # into the output collection
         for doc in temporary_coll.find({}, {'_id': 0}):
             if 'output_id' in doc:
-                yield UpdateOne({'_id': doc['output_id']}, {'deprecated': False})
+                yield UpdateOne({'_id': doc['output_id']}, {'$set': {'deprecated': False}})
             else:
                 yield InsertOne(doc)
 
-    output_coll.bulk_write(create_output_ops())
+    for block in grouper(create_output_ops(), 1000):
+        output_coll.bulk_write(list(block))
 
     # 5. finally delete collection
     temporary_coll.drop()
+
+    return valid_count, []
+
+class Validator:
+    def __init__(self, analyzers_coll: Collection, analysis_db: Database, output_coll: Collection, loop=None, host='localhost', port=33424):
+        self.analyzers_state = AnalyzerState(analyzers_coll)
+        self.output_coll = output_coll
+        self.analysis_db = analysis_db
+
+    def check_for_work(self):
+        executed = self.analyzers_state.executed_analyzers()
+        print("check for work")
+        for analyzer in executed:
+            print("validating and committing {} action id {}".format(analyzer['_id'], analyzer['action_id']))
+
+            self.analyzers_state.transition_to_validating(analyzer['_id'])
+
+            exe_res = analyzer['execution_result']
+            temporary_coll = self.analysis_db[exe_res['temporary_coll']]
+            valid_count, errors = commit(analyzer['_id'], analyzer['action_id'], exe_res['timespans'],
+                                         temporary_coll, self.output_coll, analyzer['output_types'])
+
+            if len(errors) > 0:
+                print("analyzer {} with action id {} has at least {} valid records but {} have problems:".format(analyzer['_id'], analyzer['action_id'], valid_count, len(errors)))
+                for idx, error in enumerate(errors):
+                    print("{}: {}".format(idx, error))
+
+                self.analyzers_state.transition_to_error(analyzer['_id'], 'error when executing validator:\n' + '\n'.join((str(error) for error in errors)))
+            else:
+                print("successfully commited analyzer {} run with action id {}. {} records inserted".format(analyzer['_id'], analyzer['action_id'], valid_count))
+                self.analyzers_state.transition_to_sensing(analyzer['_id'])
+
+    def run(self):
+        # TODO consider using threads
+        while True:
+            sleep(4)
+            self.check_for_work()
+
+
+def main():
+    mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
+
+    sup = Validator(mongo.analysis.analyzers, mongo.analysis, mongo.analysis.observations)
+
+    sup.run()
+
+if __name__ == "__main__":
+    main()

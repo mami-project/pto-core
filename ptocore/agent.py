@@ -6,11 +6,15 @@ import json
 import os
 import subprocess
 
+import dateutil.parser
 from pymongo import MongoClient
 
 Interval = Tuple[datetime, datetime]
 
 class AgentError(Exception):
+    pass
+
+class AnalyzerError(Exception):
     pass
 
 class AgentBase:
@@ -42,10 +46,16 @@ class AgentBase:
 
         # create custom role: only readWrite on own collection
         db.command("createRole", self.identifier,
-            privileges=[{
-               "resource": {"db": "analysis", "collection": self.identifier},
-               "actions": ["find", "insert", "remove", "update", "createIndex"]
-            }],
+            privileges=[
+                {
+                    "resource": {"db": "analysis", "collection": self.identifier},
+                    "actions": ["find", "insert", "remove", "update", "createIndex"]
+                },
+                {
+                    "resource": {"db": "analysis", "collection": 'action_log'},
+                    "actions": ["find"]
+                }
+            ],
             roles=[]
         )
 
@@ -66,12 +76,13 @@ class AgentBase:
         self.stack.remove(self._delete_user)
         print("user deleted")
 
-    def _create_collection(self):
+    def _create_collection(self, delete_after=True):
         db = self.mongo.analysis
 
         db.create_collection(self.identifier)
 
-        self.stack.append(self._delete_collection)
+        if delete_after:
+            self.stack.append(self._delete_collection)
         print("collection created")
 
 
@@ -100,8 +111,10 @@ class AgentBase:
             return {
                 'url': 'mongodb://{}:{}@localhost/analysis'.format(self.identifier, self.token),
                 'output': ('analysis', self.identifier),
+                'output_url': 'mongodb://{}:{}@localhost/analysis.{}'.format(self.identifier, self.token, self.identifier),
                 'observations': ('observations', 'observations'),
                 'metadata': ('uploads', 'uploads'),
+                'action_log': ('analysis', 'action_log'),
                 'analyzer_id': self.analyzer_id,
                 'action_id': self.action_id,
                 'input_formats': self.input_formats,
@@ -186,7 +199,7 @@ class ScriptAgent(AgentBase):
 
         try:
             self._load_analyzer()
-            self._create_collection()
+            self._create_collection(delete_after=False)
             self._create_user()
         except:
             self._cleanup()
@@ -197,7 +210,7 @@ class ScriptAgent(AgentBase):
     def teardown(self):
         try:
             self._delete_user()
-            self._delete_collection()
+            # deleting the collection is done in the validator
             self._free_analyzer()
         except:
             self._cleanup()
@@ -210,24 +223,31 @@ class ScriptAgent(AgentBase):
     def _handle_request(self, action: str, payload: dict):
         if action == 'set_result_info':
             try:
-                max_action_id = payload['max_action_id']
-                output_timespans = payload['timespans']
-            except KeyError:
-                return {'error': "one or more expected fields of {'timespans', 'max_action_id'} not found."}
+                max_action_id = int(payload['max_action_id'])
+                timespans_str = payload['timespans']
 
-            if max_action_id < 0:
-                return {'error': 'max_action_id < 0 not allowed'}
 
-            if len(output_timespans) == 0:
-                return {'error': 'at least one timespan is required'}
+                if max_action_id < 0:
+                    return {'error': 'max_action_id < 0 not allowed'}
 
-            if not all(len(timespan) == 2 and
-                       isinstance(timespan[0], datetime) and
-                       isinstance(timespan[1], datetime) for timespan in output_timespans):
-                return {'error': 'invalid payload format'}
+                if len(timespans_str) == 0:
+                    return {'error': 'at least one timespan is required'}
+
+                if not all(len(timespan) == 2 and
+                           isinstance(timespan[0], str) and
+                           isinstance(timespan[1], str) for timespan in timespans_str):
+                    return {'error': 'invalid payload format'}
+
+                timespans = [(dateutil.parser.parse(start_date), dateutil.parser.parse(end_date))
+                             for start_date, end_date in timespans_str]
+
+            except (KeyError, ValueError, TypeError) as e:
+                traceback.print_exc()
+                return {'error': "one or more fields {'timespans', 'max_action_id'} are invalid or missing:\n"+str(e)}
+
 
             self.result_max_action_id = max_action_id
-            self.result_timespans = output_timespans
+            self.result_timespans = timespans
 
             return {'accepted': True}
         else:
@@ -253,7 +273,8 @@ class ScriptAgent(AgentBase):
         print(self.analyzer_stdout)
         print(self.analyzer_stderr)
 
-        print("retcode", proc.returncode)
+        if proc.returncode != 0:
+            raise AnalyzerError("The analyzer return value was not zero.")
 
         print("analyzer executed")
 

@@ -1,7 +1,7 @@
 from pymongo import MongoClient
 from pymongo.collection import Collection
 
-from . import sensitivity
+from .sensitivity import Sensitivity
 from .analyzerstate import AnalyzerState
 
 
@@ -11,12 +11,6 @@ class Sensor:
         self.action_log = action_log
 
     def check(self):
-        """
-        1. get all idle production analyzers [name, input types]
-        2. signalled those which probably need to run by performing base sensitivity check
-        3. filter
-        """
-
         sensing = self.analyzers_state.sensing_analyzers()
 
         for analyzer in sensing:
@@ -33,13 +27,13 @@ class Sensor:
                 # TODO set 'stalled_reason' = "input unstable" in analyzers_coll
                 continue
 
-            if sensitivity.any_changes(self.action_log, analyzer['_id'],
-                                       analyzer['input_formats'], analyzer['input_types']):
+            stv = Sensitivity(self.action_log, analyzer['_id'], analyzer['input_formats'], analyzer['input_types'])
+
+            if stv.any_changes():
                 # okay let's do this. change state of analyzer to planned.
                 self.analyzers_state.transition_to_planned(analyzer['_id'])
 
-                # next time we call blocked_types() and unstable_types(), the input and output types of
-                # this analyzer are now also showing up there.
+                # the input types and output types specified in the analyzer are now blocked
 
 if __name__ == "__main__":
     mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
