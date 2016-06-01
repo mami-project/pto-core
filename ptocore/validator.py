@@ -60,6 +60,7 @@ class ValidationError(Exception):
     def __repr__(self):
         return "Validation Error {}: {}".format(self.obsid, self.reason)
 
+
 def grouper(iterable, count):
     iterator = iter(iterable)
     while True:
@@ -181,26 +182,31 @@ def find_counterpart(doc, other_coll: Collection):
     # 2b.equality check will match if any array item matches.
     #    assume there is doc = {'value': [1, 2, 3]} then query {'value': 2} will match.
 
-    counterparts = other_coll.find({
+    if isinstance(doc['time'], datetime):
+        time_check = {'time': doc['time']}
+    else:
+        time_check = {'$and': [
+            {'time.from': doc['time']['from']},
+            {'time.to': doc['time']['to']}
+        ]}
+
+    query = {
         'analyzer_id': doc['analyzer_id'],
         'condition': doc['condition'],
         'path': doc['path'],
         'sources': doc['sources'],
-        #'value': doc['value'], -> perform in python
-        '$or': [
-            {'time': doc['time']},
-            {'$and': [
-                {'time.from': doc['time']['from']},
-                {'time.to': doc['time']['to']}
-            ]}
-        ]
-    })
+        'value': doc['value'], #-> perform in python
+    }
+    query.update(time_check)
+
+    counterparts = other_coll.find(query)
 
     for counterpart in counterparts:
         if counterpart['value'] == doc['value']:
             return counterpart
     else:
         return None
+
 
 def commit(analyzer_id: int,
            action_id: int,
@@ -236,7 +242,7 @@ def commit(analyzer_id: int,
 
     # 2. find all observations that exist both in the output collection and in the temporary collection
     candidates = output_coll.find(candidates_query)
-    pairs = ((candidate, find_counterpart(candidate, temporary_coll)) for candidate in candidates)
+    pairs = filter(lambda x: x[1] is not None, ((candidate, find_counterpart(candidate, temporary_coll)) for candidate in candidates))
 
     # 3. mark all of them in the temporary collection
     mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'$set': {'output_id': pair[0]['_id']}}) for pair in pairs)
@@ -272,7 +278,7 @@ class Validator:
 
     def check_for_work(self):
         executed = self.analyzers_state.executed_analyzers()
-        print("check for work")
+        print("validator: check for work")
         for analyzer in executed:
             print("validating and committing {} action id {}".format(analyzer['_id'], analyzer['action_id']))
 
@@ -296,9 +302,8 @@ class Validator:
     def run(self):
         # TODO consider using threads
         while True:
-            sleep(4)
             self.check_for_work()
-
+            sleep(4)
 
 def main():
     mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
