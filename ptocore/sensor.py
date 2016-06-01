@@ -4,6 +4,7 @@ from pymongo.collection import Collection
 from .sensitivity import Sensitivity
 from .analyzerstate import AnalyzerState
 
+from time import sleep
 
 class Sensor:
     def __init__(self, analyzers_coll: Collection, action_log: Collection):
@@ -11,6 +12,7 @@ class Sensor:
         self.action_log = action_log
 
     def check(self):
+        print("sensor: check for work")
         sensing = self.analyzers_state.sensing_analyzers()
 
         for analyzer in sensing:
@@ -35,9 +37,19 @@ class Sensor:
 
                 # the input types and output types specified in the analyzer are now blocked
 
-if __name__ == "__main__":
+    def run(self):
+        # TODO consider using threads
+        while True:
+            self.check()
+            sleep(4)
+
+
+def main():
     mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
 
     sens = Sensor(mongo.analysis.analyzers, mongo.analysis.action_log)
 
-    sens.check()
+    sens.run()
+
+if __name__ == "__main__":
+    main()

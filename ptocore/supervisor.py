@@ -108,7 +108,7 @@ class Supervisor:
 
     def check_for_work(self):
         planned = self.analyzers_state.planned_analyzers()
-        print("check for work")
+        print("supervisor: check for work")
         for analyzer in planned:
             print("planned", analyzer)
 
@@ -132,8 +132,8 @@ class Supervisor:
 
     async def run(self):
         while True:
-            await asyncio.sleep(4)
             self.check_for_work()
+            await asyncio.sleep(4)
 
 
 def main():
