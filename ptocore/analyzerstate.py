@@ -112,7 +112,8 @@ class AnalyzerState:
         self.analyzers_coll.insert_one(doc)
 
     def request_wish(self, analyzer_id, wish):
-        assert(wish in ['cancel', 'disable'])
+        if wish not in ['cancel', 'disable']:
+            raise ValueError("unknown wish")
 
         doc = self.analyzers_coll.find_one_and_update(
             {'_id': analyzer_id},

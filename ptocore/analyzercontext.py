@@ -4,6 +4,7 @@ import os
 from collections import defaultdict
 from datetime import datetime
 from typing import Sequence, Tuple
+from warnings import warn
 
 from pymongo import MongoClient
 
@@ -142,8 +143,11 @@ class AnalyzerContext():
     def spark_get_uploads(self, query):
         sc = self.get_spark()
 
-        assert('complete' in query and query['complete'] is True)
-        assert('action_id' in query)
+        if 'complete' not in query or query['complete'] is not True:
+            warn("It is strongly advised to include {complete: True} in your query. See manual.")
+
+        if 'action_id' not in query:
+            warn("It is strongly advised to include action_id in your query. See manual.")
 
         uploads = self.metadata.find(query)
 
