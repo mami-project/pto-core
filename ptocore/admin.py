@@ -1,3 +1,5 @@
+from threading import RLock
+
 import flask
 from jsonschema import validate
 from pymongo import MongoClient
@@ -18,6 +20,12 @@ analyzer_create_schema = {
   },
   "required": ["input_formats", "input_types", "output_types", "command_line", "repo_url", "repo_commit"]
 }
+
+def get_lock():
+    lock = getattr(flask.g, '_lock', None)
+    if lock is None:
+        lock = flask.g._lock = RLock()
+    return lock
 
 def get_mongo():
     mongo = getattr(flask.g, '_mongo', None)
@@ -47,47 +55,56 @@ def request_info(analyzer_id):
 
 @app.route('/analyzer/<analyzer_id>', methods=['POST'])
 def request_create(analyzer_id):
-    analyzer_state = get_analyzer_state()
+    with get_lock():
+        analyzer_state = get_analyzer_state()
 
-    config = flask.request.get_json()
-    validate(config, analyzer_create_schema)
+        config = flask.request.get_json()
+        validate(config, analyzer_create_schema)
 
-    # clone repository into directory and checkout commit
-    repo_url = config['repo_url']
-    repo_commit = config['repo_commit']
+        # clone repository into directory and checkout commit
+        repo_url = config['repo_url']
+        repo_commit = config['repo_commit']
 
-    analyzer_state.create_analyzer(analyzer_id, config['input_formats'], config['input_types'],
-                                   config['output_types'], config['command_line'], '')
+        analyzer_state.create_analyzer(analyzer_id, config['input_formats'], config['input_types'],
+                                       config['output_types'], config['command_line'], '')
 
-    return flask.jsonify({'success': 'created'})
+        return flask.jsonify({'success': 'created'})
+
+@app.route('/analyzer/<analyzer_id>/setrepo', methods=['POST'])
+def request_setrepo(analyzer_id):
+    with get_lock():
+        analyzer_state = get_analyzer_state()
 
 
 @app.route('/analyzer/<analyzer_id>/disable', methods=['PUT'])
 def request_disable(analyzer_id):
-    analyzer_state = get_analyzer_state()
+    with get_lock():
+        analyzer_state = get_analyzer_state()
 
-    if not analyzer_state.request_wish(analyzer_id, 'disable'):
-        flask.jsonify({'error': 'cannot request deactivation for \'{}\''.format(analyzer_id)})
+        if not analyzer_state.request_wish(analyzer_id, 'disable'):
+            flask.jsonify({'error': 'cannot request deactivation for \'{}\''.format(analyzer_id)})
 
-    if analyzer_state.check_wish(analyzer_state[analyzer_id], 'disable'):
-        print("admin: disabled {} upon request".format(analyzer_id))
+        if analyzer_state.check_wish(analyzer_state[analyzer_id], 'disable'):
+            print("admin: disabled {} upon request".format(analyzer_id))
 
-    return flask.jsonify({'success': 'requested deactivation for \'{}\''.format(analyzer_id)})
+        return flask.jsonify({'success': 'requested deactivation for \'{}\''.format(analyzer_id)})
 
 
 @app.route('/analyzer/<analyzer_id>/enable', methods=['PUT'])
 def request_enable(analyzer_id):
-    analyzer_state = get_analyzer_state()
+    with get_lock():
+        analyzer_state = get_analyzer_state()
 
-    analyzer = analyzer_state[analyzer_id]
+        analyzer = analyzer_state[analyzer_id]
 
-    if analyzer['state'] in ['error', 'disabled']:
-        analyzer_state.transition(analyzer_id, analyzer['state'], 'sensing')
+        if analyzer['state'] in ['error', 'disabled']:
+            analyzer_state.transition(analyzer_id, analyzer['state'], 'sensing')
 
 
 @app.route('/analyzer/<analyzer_id>/cancel', methods=['PUT'])
 def request_cancel(analyzer_id):
-    analyzer_state = get_analyzer_state()
-    analyzer_state.request_wish(analyzer_id, 'cancel')
+    with get_lock():
+        analyzer_state = get_analyzer_state()
+        analyzer_state.request_wish(analyzer_id, 'cancel')
 
 
