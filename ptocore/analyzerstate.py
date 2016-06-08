@@ -25,8 +25,7 @@ class TransitionFailed(AnalyzerStateError):
 transition_domains = {
     'admin': {
         'error':        {'disabled'},
-        'disabled':     {'error', 'sensing', 'maintenance'},
-        'maintenance':  {'error', 'disabled'}
+        'disabled':     {'error', 'sensing'},
     },
     'sensor': {
         'sensing':      {'error', 'disabled', 'planned'}

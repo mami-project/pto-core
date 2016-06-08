@@ -5,8 +5,11 @@ from jsonschema import validate
 from pymongo import MongoClient
 
 from .analyzerstate import AnalyzerState
+from .repomanager import procure_repository
 
 app = flask.Flask('ptocore')
+
+BASE_GIT_PATH = '/home/elio/analyzers'
 
 analyzer_create_schema = {
   "type": "object",
@@ -20,6 +23,18 @@ analyzer_create_schema = {
   },
   "required": ["input_formats", "input_types", "output_types", "command_line", "repo_url", "repo_commit"]
 }
+
+analyzer_setrepo_schema = {
+    "type": "object",
+    "properties": {
+        "repo_url":     {"type": "string"},
+        "repo_commit":  {"type": "string"}
+    },
+    "required": ["repo_url", "repo_commit"]
+}
+
+class AnalyzerNotDisabled(Exception):
+    pass
 
 def get_lock():
     lock = getattr(flask.g, '_lock', None)
@@ -65,6 +80,9 @@ def request_create(analyzer_id):
         repo_url = config['repo_url']
         repo_commit = config['repo_commit']
 
+        # function will raise error if analyzer_id is not suitable (e.g. contains '/' etc..)
+        procure_repository(BASE_GIT_PATH, analyzer_id, repo_url, repo_commit)
+
         analyzer_state.create_analyzer(analyzer_id, config['input_formats'], config['input_types'],
                                        config['output_types'], config['command_line'], '')
 
@@ -73,7 +91,19 @@ def request_create(analyzer_id):
 @app.route('/analyzer/<analyzer_id>/setrepo', methods=['POST'])
 def request_setrepo(analyzer_id):
     with get_lock():
+        config = flask.request.get_json()
+        validate(config, analyzer_setrepo_schema)
+
         analyzer_state = get_analyzer_state()
+        if not analyzer_state[analyzer_id]['state'] == 'disabled':
+            raise AnalyzerNotDisabled()
+
+        repo_url = config['repo_url']
+        repo_commit = config['repo_commit']
+
+        procure_repository(BASE_GIT_PATH, analyzer_id, repo_url, repo_commit)
+
+        return flask.jsonify({'success': 'repo updated'})
 
 
 @app.route('/analyzer/<analyzer_id>/disable', methods=['PUT'])
