@@ -32,7 +32,7 @@ setup(
 
     packages=find_packages(exclude=['contrib', 'docs', 'tests*']),
 
-    install_requires=['python-dateutil', 'pymongo', 'flask'],
+    install_requires=['python-dateutil', 'pymongo', 'flask', 'jsonschema'],
 
     entry_points={
     },

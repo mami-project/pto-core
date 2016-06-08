@@ -48,7 +48,7 @@ class Supervisor:
         self.port = port
 
         self.mongo = mongo
-        self.analyzers_state = AnalyzerState(analyzers_coll)
+        self.analyzer_state = AnalyzerState('supervisor', analyzers_coll)
 
         self.agents = {}
 
@@ -101,15 +101,27 @@ class Supervisor:
             traceback.print_exc()
 
             # set state accordingly
-            self.analyzers_state.transition_to_error(agent.analyzer_id, "error when exeucting analyzer:\n"+traceback.format_exc())
+            self.analyzer_state.transition_to_error(agent.analyzer_id,
+                                                     "error when exeucting analyzer:\n" + traceback.format_exc())
         else:
             # everything went well, so give to validator
-            self.analyzers_state.transition_to_executed(agent.analyzer_id, agent.identifier, agent.result_max_action_id, agent.result_timespans)
+            transition_args = {'execution_result': {
+                'temporary_coll': agent.identifier,
+                'max_action_id': agent.result_max_action_id,
+                'timespans': agent.result_timespans
+            }}
+
+            self.analyzer_state.transition(agent.analyzer_id, 'executing', 'executed', transition_args)
 
     def check_for_work(self):
-        planned = self.analyzers_state.planned_analyzers()
+        planned = self.analyzer_state.planned_analyzers()
         print("supervisor: check for work")
         for analyzer in planned:
+            # check for wish
+            if self.analyzer_state.check_wish(analyzer, 'cancel'):
+                print("supervisor: cancelled {} upon request".format(analyzer['_id']))
+                continue
+
             print("planned", analyzer)
 
             # create agent
@@ -123,7 +135,7 @@ class Supervisor:
             self.agents[agent.identifier] = agent
 
             # change analyzer state
-            self.analyzers_state.transition_to_executing(agent.analyzer_id, agent.action_id)
+            self.analyzer_state.transition(agent.analyzer_id, 'planned', 'executing', {'agent_id': agent.action_id})
 
             # schedule for execution
             task = asyncio.ensure_future(agent.execute())

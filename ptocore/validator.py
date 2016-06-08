@@ -271,18 +271,23 @@ def commit(analyzer_id: int,
     return valid_count, []
 
 class Validator:
-    def __init__(self, analyzers_coll: Collection, analysis_db: Database, output_coll: Collection, loop=None, host='localhost', port=33424):
-        self.analyzers_state = AnalyzerState(analyzers_coll)
+    def __init__(self, analyzers_coll: Collection, analysis_db: Database, output_coll: Collection):
+        self.analyzer_state = AnalyzerState('validator', analyzers_coll)
         self.output_coll = output_coll
         self.analysis_db = analysis_db
 
     def check_for_work(self):
-        executed = self.analyzers_state.executed_analyzers()
+        executed = self.analyzer_state.executed_analyzers()
         print("validator: check for work")
         for analyzer in executed:
+            # check for wish
+            if self.analyzer_state.check_wish(analyzer, 'cancel'):
+                print("validator: cancelled {} upon request".format(analyzer['_id']))
+                continue
+
             print("validating and committing {} action id {}".format(analyzer['_id'], analyzer['action_id']))
 
-            self.analyzers_state.transition_to_validating(analyzer['_id'])
+            self.analyzer_state.transition(analyzer['_id'], 'executed', 'validating')
 
             exe_res = analyzer['execution_result']
             temporary_coll = self.analysis_db[exe_res['temporary_coll']]
@@ -294,10 +299,10 @@ class Validator:
                 for idx, error in enumerate(errors):
                     print("{}: {}".format(idx, error))
 
-                self.analyzers_state.transition_to_error(analyzer['_id'], 'error when executing validator:\n' + '\n'.join((str(error) for error in errors)))
+                self.analyzer_state.transition_to_error(analyzer['_id'], 'error when executing validator:\n' + '\n'.join((str(error) for error in errors)))
             else:
                 print("successfully commited analyzer {} run with action id {}. {} records inserted".format(analyzer['_id'], analyzer['action_id'], valid_count))
-                self.analyzers_state.transition_to_sensing(analyzer['_id'])
+                self.analyzer_state.transition(analyzer['_id'], 'validating', 'validated')
 
     def run(self):
         # TODO consider using threads

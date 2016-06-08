@@ -6,24 +6,33 @@ from .analyzerstate import AnalyzerState
 
 from time import sleep
 
+
 class Sensor:
     def __init__(self, analyzers_coll: Collection, action_log: Collection):
-        self.analyzers_state = AnalyzerState(analyzers_coll)
+        self.analyzer_state = AnalyzerState('sensor', analyzers_coll)
         self.action_log = action_log
 
     def check(self):
         print("sensor: check for work")
-        sensing = self.analyzers_state.sensing_analyzers()
-
+        sensing = self.analyzer_state.sensing_analyzers()
         for analyzer in sensing:
-            print(analyzer)
-            blocked_types = self.analyzers_state.blocked_types()
+            # check for wishes
+            if self.analyzer_state.check_wish(analyzer, 'disable'):
+                print("sensor: disabled {} upon request".format(analyzer['_id']))
+                continue
+
+            if self.analyzer_state.check_wish(analyzer, 'cancel'):
+                print("sensor: cancelled {} upon request".format(analyzer['_id']))
+                continue
+
+            # check types
+            blocked_types = self.analyzer_state.blocked_types()
             print("blocked_types:", blocked_types)
             if any(output_type in blocked_types for output_type in analyzer['output_types']):
                 # TODO set 'stalled_reason' = "output blocked" in analyzers_coll
                 continue
 
-            unstable_types = self.analyzers_state.unstable_types()
+            unstable_types = self.analyzer_state.unstable_types()
             print("unstable_types:", blocked_types)
             if any(input_type in unstable_types for input_type in analyzer['input_types']):
                 # TODO set 'stalled_reason' = "input unstable" in analyzers_coll
@@ -33,7 +42,7 @@ class Sensor:
 
             if stv.any_changes():
                 # okay let's do this. change state of analyzer to planned.
-                self.analyzers_state.transition_to_planned(analyzer['_id'])
+                self.analyzer_state.transition(analyzer['_id'], 'sensing', 'planned')
 
                 # the input types and output types specified in the analyzer are now blocked
 
