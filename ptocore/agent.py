@@ -1,3 +1,7 @@
+"""
+Manages the execution of an analyzer (script or online).
+"""
+
 import asyncio
 from typing import Sequence, Tuple
 from datetime import datetime

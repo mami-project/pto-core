@@ -1,3 +1,7 @@
+"""
+Provides the interface to the supervisor from analyzers written in Python.
+"""
+
 import json
 import asyncio
 import os
@@ -14,6 +18,7 @@ from .sensitivity import Sensitivity
 
 Interval = Tuple[datetime, datetime]
 
+
 class ConfigNotFound(Exception):
     pass
 
@@ -28,9 +33,17 @@ class ContextError(Exception):
 
 class SupervisorClient(JsonProtocol):
     """
-    Simple request-answer based client.
+    Implements a simple request-response based state-less protocol with token-based
+    authentication for passing JSON encoded, line seperated requests to the supervisor.
+
+    Users of this class should only call the method request(), because otherwise the communication
+    may break (infinite wait, get answer for different request, etc..).
     """
     def __init__(self, credentials):
+        """
+        Establish a connection to supervisor but don't exchange any messages yet.
+        :param credentials: A dictionary with the keys identifier, token, host, port.
+        """
         self.identifier = credentials['identifier']
         self.token = credentials['token']
 
@@ -40,10 +53,15 @@ class SupervisorClient(JsonProtocol):
         self.loop = asyncio.new_event_loop()
 
         # connect to server
+        # TODO add tls cert
         coro = self.loop.create_connection(lambda: self, credentials['host'], credentials['port'])
         self.loop.run_until_complete(coro)
 
     def request(self, action: str, payload: dict = None):
+        """
+        Send a request (payload optional) to the supervisor.
+        :return: The answer dictionary of the supervisor.
+        """
         msg = {
             'identifier': self.identifier,
             'token': self.token,
@@ -66,7 +84,24 @@ class SupervisorClient(JsonProtocol):
 
 
 class AnalyzerContext():
+    """
+    Almost the first thing an analyzer (both script and online analyzers) wants to do is
+    to get access to various data sources and perform activities outside the program.
+    The AnalyzerContext is responsible for providing data (MongoDB, HDFS) and
+    computing access (Spark, Distributed) to the analyzer.
+
+    Script analyzers need to always call set_result_info() at least once to specify the
+    scope of their analysis. Without this information the validator is not able to commit
+    to the observations database. For online analyzers this call will yield an
+    'unknown request' message from the supervisor.
+    """
     def __init__(self, credentials: dict=None):
+        """
+        Establish a connection to the supervisor given the credentials via constructor parameter
+        or environment variables. The existence of an environment variable 'PTO_CREDENTIALS' takes
+        precedence over the constructor parameter.
+        :param credentials: A dictionary with the keys identifier, token, host, port.
+        """
         # environment variable overrides parameter
         if 'PTO_CREDENTIALS' in os.environ:
             credentials = json.loads(os.environ['PTO_CREDENTIALS'])
@@ -84,6 +119,7 @@ class AnalyzerContext():
 
         self.mongo = MongoClient(ans['url'])
 
+        # small helper function for getting the collection
         def get_coll(val):
             return self.mongo[val[0]][val[1]]
 
@@ -102,7 +138,7 @@ class AnalyzerContext():
 
         self.sensitivity = Sensitivity(self.action_log, self.analyzer_id, self.input_formats, self.input_types)
 
-        # other contexts loaded on demand
+        # more contexts are loaded on demand
         self._spark_context = None
         self._distributed_executor = None
 
