@@ -40,9 +40,9 @@ transition_domains = {
     }
 }
 
-all_states = set(chain.from_iterable(transition_domains.values()))
-passive_states = set(transition_domains['admin']) | set(transition_domains['sensor'])
-running_states = all_states - passive_states
+all_states = list(chain.from_iterable(transition_domains.values()))
+passive_states = list(set(transition_domains['admin']) | set(transition_domains['sensor']))
+running_states = list(set(all_states) - set(passive_states))
 
 
 class AnalyzerState:
@@ -132,7 +132,7 @@ class AnalyzerState:
             update_query['$set'].update(args)
 
         # check if transition is allowed
-        if self.is_allowed(find_query['state'], update_query['$set']['state']):
+        if not self.is_allowed(find_query['state'], update_query['$set']['state']):
             raise TransitionNotSupportedError()
 
         doc = self.analyzers_coll.find_one_and_update(find_query, update_query)
