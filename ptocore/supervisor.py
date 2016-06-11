@@ -8,7 +8,7 @@ from functools import partial
 from pymongo import MongoClient
 from pymongo.collection import Collection
 
-from .agent import OnlineAgent, ScriptAgent
+from .agent import OnlineAgent, ModuleAgent
 from .analyzerstate import AnalyzerState
 from .jsonprotocol import JsonProtocol
 from .mongoutils import AutoIncrementFactory
@@ -41,8 +41,8 @@ class Supervisor:
         self.loop = loop or asyncio.get_event_loop()
 
         id_factory = AutoIncrementFactory(id_coll)
-        self._action_id_creator = id_factory.get_incrementor('action_id')
-        self._online_id_creator = id_factory.get_incrementor('online_id')
+        self._agent_id_creator = id_factory.get_incrementor('agent_id')
+
 
         self.host = host
         self.port = port
@@ -77,10 +77,12 @@ class Supervisor:
 
     def create_online_agent(self):
         print("creating online supervisor")
-        online_id = self._online_id_creator()
+
+        # create agent
+        identifier = 'online_'+str(self._agent_id_creator())
         token = os.urandom(16).hex()
 
-        agent = OnlineAgent(online_id, token, self.mongo)
+        agent = OnlineAgent(identifier, token, self.mongo)
 
         self.agents[agent.identifier] = agent
 
@@ -88,8 +90,8 @@ class Supervisor:
 
         return credentials, agent
 
-    def script_agent_done(self, agent: ScriptAgent, fut: asyncio.Future):
-        print("script agent done")
+    def script_agent_done(self, agent: ModuleAgent, fut: asyncio.Future):
+        print("module agent done")
         agent.teardown()
         del self.agents[agent.identifier]
 
@@ -102,7 +104,7 @@ class Supervisor:
 
             # set state accordingly
             self.analyzer_state.transition_to_error(agent.analyzer_id,
-                                                     "error when exeucting analyzer:\n" + traceback.format_exc())
+                                                     "error when exeucting analyzer module:\n" + traceback.format_exc())
         else:
             # everything went well, so give to validator
             transition_args = {'execution_result': {
@@ -125,22 +127,22 @@ class Supervisor:
             print("planned", analyzer)
 
             # create agent
-            action_id = self._action_id_creator()
+            identifier = 'module_'+str(self._agent_id_creator())
             token = os.urandom(16).hex()
 
-            agent = ScriptAgent(analyzer['_id'], action_id, token, self.host, self.port,
+            agent = ModuleAgent(analyzer['_id'], identifier, token, self.host, self.port,
                                 analyzer['input_formats'], analyzer['input_types'], analyzer['output_types'],
                                 analyzer['command_line'], analyzer['working_dir'], self.mongo)
 
             self.agents[agent.identifier] = agent
 
             # change analyzer state
-            self.analyzer_state.transition(agent.analyzer_id, 'planned', 'executing', {'agent_id': agent.action_id})
+            self.analyzer_state.transition(agent.analyzer_id, 'planned', 'executing')
 
             # schedule for execution
             task = asyncio.ensure_future(agent.execute())
             task.add_done_callback(partial(self.script_agent_done, agent))
-            print("script agent started")
+            print("module agent started")
 
     async def run(self):
         while True:
@@ -157,6 +159,7 @@ def main():
     # create online supervisor and print account details
     credentials, agent = sup.create_online_agent()
     print(json.dumps(credentials))
+    print("export PTO_CREDENTIALS=\"{}\"".format(json.dumps(credentials).replace('"', '\\"')))
 
     asyncio.ensure_future(sup.run())
     loop.run_forever()

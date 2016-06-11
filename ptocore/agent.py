@@ -23,10 +23,9 @@ class AnalyzerError(Exception):
 
 class AgentBase:
     # TODO: check mongo return values & exceptions
-    def __init__(self, identifier, token, mongo: MongoClient, analyzer_id, action_id,
+    def __init__(self, identifier, token, mongo: MongoClient, analyzer_id,
                  input_formats: Sequence[str], input_types: Sequence[str], output_types: Sequence[str]):
         self.analyzer_id = analyzer_id
-        self.action_id = action_id
         self.identifier = identifier
 
         self.token = token
@@ -36,6 +35,9 @@ class AgentBase:
         self.input_types = input_types
         self.output_types = output_types
 
+        # set by set_result_info in analyzercontext. is mandatory for module analyzers, no effect for online analyzers.
+        self.result_timespans = None
+        self.result_max_action_id = None
 
         # a list of cleanup coroutines for reverting in case of error
         self.stack = []
@@ -120,7 +122,6 @@ class AgentBase:
                 'metadata': ('uploads', 'uploads'),
                 'action_log': ('analysis', 'action_log'),
                 'analyzer_id': self.analyzer_id,
-                'action_id': self.action_id,
                 'input_formats': self.input_formats,
                 'input_types': self.input_types,
                 'output_types': self.output_types
@@ -135,101 +136,10 @@ class AgentBase:
             }
         elif action == 'get_distributed':
             return {'address': '127.0.0.1:8706'}
-        else:
-            return {'error': 'unknown request'}
-
-
-    def teardown(self):
-        raise NotImplementedError()
-
-class OnlineAgent(AgentBase):
-    def __init__(self, online_id,
-                 token,
-                 mongo: MongoClient):
-
-        identifier = 'online_'+str(online_id)
-
-        super().__init__(identifier, token, mongo, identifier, -1, [], [], [])
-
-        self.online_id = online_id
-
-        try:
-            self._create_collection()
-            self._create_user()
-        except:
-            self._cleanup()
-
-            # TODO add more info
-            raise AgentError()
-
-    def teardown(self):
-        try:
-            self._delete_user()
-            self._delete_collection()
-        except:
-            self._cleanup()
-
-            # TODO add more info
-            raise AgentError()
-        else:
-            assert(len(self.stack) == 0)
-
-class ScriptAgent(AgentBase):
-    def __init__(self, analyzer_id,
-                 action_id, token,
-                 host, port,
-                 input_formats: Sequence[str],
-                 input_types: Sequence[str],
-                 output_types: Sequence[str],
-                 cmdline: Sequence[str],
-                 cwd: str,
-                 mongo: MongoClient):
-
-        super().__init__('script_'+str(action_id), token, mongo,
-                         analyzer_id, action_id, input_formats, input_types, output_types)
-
-        self.result_timespans = None
-        self.result_max_action_id = None
-
-        self.cmdline = cmdline
-        self.cwd = cwd
-
-        # inherit current process environment (this is the default popen behavior) and add credentials
-        self.env = dict(os.environ)
-        self.env['PTO_CREDENTIALS'] = json.dumps({'identifier': self.identifier, 'token': token, 'host': host, 'port': port})
-
-        self.analyzer_stdout = []
-        self.analyzer_stderr = []
-
-        try:
-            self._load_analyzer()
-            self._create_collection(delete_after=False)
-            self._create_user()
-        except:
-            self._cleanup()
-
-            # TODO add more info
-            raise AgentError()
-
-    def teardown(self):
-        try:
-            self._delete_user()
-            # deleting the collection is done in the validator
-            self._free_analyzer()
-        except:
-            self._cleanup()
-
-            # TODO add more info
-            raise AgentError()
-        else:
-            assert(len(self.stack) == 0)
-
-    def _handle_request(self, action: str, payload: dict):
-        if action == 'set_result_info':
+        elif action == 'set_result_info':
             try:
                 max_action_id = int(payload['max_action_id'])
                 timespans_str = payload['timespans']
-
 
                 if max_action_id < 0:
                     return {'error': 'max_action_id < 0 not allowed'}
@@ -255,15 +165,83 @@ class ScriptAgent(AgentBase):
 
             return {'accepted': True}
         else:
-            return super()._handle_request(action, payload)
+            return {'error': 'unknown request'}
 
-    def _load_analyzer(self):
-        self.stack.append(self._free_analyzer)
-        print("analyzer loaded")
 
-    def _free_analyzer(self):
-        self.stack.remove(self._free_analyzer)
-        print("analyzer freed")
+    def teardown(self):
+        raise NotImplementedError()
+
+class OnlineAgent(AgentBase):
+    def __init__(self, identifier, token, mongo: MongoClient):
+
+        super().__init__(identifier, token, mongo, identifier, [], [], [])
+
+        try:
+            self._create_collection()
+            self._create_user()
+        except:
+            self._cleanup()
+
+            # TODO add more info
+            raise AgentError()
+
+    def teardown(self):
+        try:
+            self._delete_user()
+            self._delete_collection()
+        except:
+            self._cleanup()
+
+            # TODO add more info
+            raise AgentError()
+        else:
+            assert(len(self.stack) == 0)
+
+
+class ModuleAgent(AgentBase):
+    def __init__(self, analyzer_id,
+                 identifier, token, host, port,
+                 input_formats: Sequence[str],
+                 input_types: Sequence[str],
+                 output_types: Sequence[str],
+                 cmdline: Sequence[str],
+                 cwd: str,
+                 mongo: MongoClient):
+
+        super().__init__(identifier, token, mongo,
+                         analyzer_id, input_formats, input_types, output_types)
+
+        self.cmdline = cmdline
+        self.cwd = cwd
+
+        # inherit current process environment (this is the default popen behavior) and add credentials
+        self.env = dict(os.environ)
+        self.env['PTO_CREDENTIALS'] = json.dumps({'identifier': self.identifier, 'token': token,
+                                                  'host': host, 'port': port})
+
+        self.analyzer_stdout = []
+        self.analyzer_stderr = []
+
+        try:
+            self._create_collection(delete_after=False)
+            self._create_user()
+        except:
+            self._cleanup()
+
+            # TODO add more info
+            raise AgentError()
+
+    def teardown(self):
+        try:
+            self._delete_user()
+            # deleting the collection is done in the validator
+        except:
+            self._cleanup()
+
+            # TODO add more info
+            raise AgentError()
+        else:
+            assert(len(self.stack) == 0)
 
     async def execute(self):
         print("executing analyzer...")

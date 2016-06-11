@@ -83,7 +83,7 @@ class SupervisorClient(JsonProtocol):
         self.loop.stop()
 
 
-class AnalyzerContext():
+class AnalyzerContext:
     """
     Almost the first thing an analyzer (both script and online analyzers) wants to do is
     to get access to various data sources and perform activities outside the program.
@@ -131,7 +131,6 @@ class AnalyzerContext():
 
         # get this analyzer's specification
         self.analyzer_id = ans['analyzer_id']
-        self.action_id = ans['action_id']
         self.input_formats = ans['input_formats']
         self.input_types = ans['input_types']
         self.output_types = ans['output_types']
@@ -223,5 +222,4 @@ class AnalyzerContext():
         return self._distributed_executor
 
     def validate(self, timespans: Sequence[Interval], output_types: Sequence[str], abort_max_errors=100):
-        return validator.validate(self.analyzer_id, self.action_id, timespans,
-                                  self.output, output_types, abort_max_errors)
+        return validator.validate(self.analyzer_id, timespans, self.output, output_types, abort_max_errors)

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Sequence, Tuple
+from typing import Sequence, Tuple, Callable
 from time import sleep
 
 import re
@@ -12,10 +12,12 @@ from pymongo.operations import UpdateOne, InsertOne
 
 from . import valuechecks
 from .analyzerstate import AnalyzerState
+from .mongoutils import AutoIncrementFactory
 
 Interval = Tuple[datetime, datetime]
 
-FIELDS = {'_id', 'action_id', 'deprecated', 'condition', 'time', 'path', 'analyzer_id', 'sources', 'value'}
+INPUT_FIELDS = {'_id', 'deprecated', 'condition', 'time', 'path', 'analyzer_id', 'sources', 'value'}
+ADD_FIELDS = {'action_id', 'hash'}
 
 codec_opts = CodecOptions(document_class=OrderedDict)
 
@@ -33,10 +35,9 @@ def schema_validator(analyzer_id, action_id: int, timespan: Interval, outputs: S
         '$and': [
             # complete
             {'analyzer_id':  {'$type': 'int', '$eq': analyzer_id}},
-            {'action_id':    {'$type': 'int', '$eq': action_id}},
             {'condition':   {'$type': 'string', '$in': outputs}},
             {'deprecated':  False},
-
+            # TODO tell schema mongodb schema validator action_id don't care if exist or not
             # incomplete validation
             {'source':      {'$exists': True}},
             {'path':        {'$exists': True}},
@@ -53,12 +54,13 @@ def schema_validator(analyzer_id, action_id: int, timespan: Interval, outputs: S
 pattern_ip4 = re.compile(r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$")
 
 class ValidationError(Exception):
-    def __init__(self, obsid, reason):
+    def __init__(self, obsid, reason: str, extra: str=''):
         self.obsid = obsid
         self.reason = reason
+        self.extra = extra
 
     def __repr__(self):
-        return "Validation Error {}: {}".format(self.obsid, self.reason)
+        return "Validation Error {}: {} {}".format(self.obsid, self.reason, self.extra)
 
 
 def grouper(iterable, count):
@@ -70,21 +72,25 @@ def grouper(iterable, count):
                 lst.append(next(iterator))
         except StopIteration:
             pass
-
         if len(lst) > 0:
             yield lst
         else:
             break
 
+def grouper_transpose(iterable, count, tuple_length=2):
+    for group in grouper(iterable, count):
+        newl = []
+        for n in range(tuple_length):
+            newl.append([tup[n] for tup in group])
+        yield newl
 
-def check(cond, obsid, reason):
+def check(cond, obsid, reason: str, extra: str=''):
     if not cond:
-        raise ValidationError(obsid, reason)
+        raise ValidationError(obsid, reason, extra)
 
 
 def validate(
         analyzer_id,
-        action_id: int,
         timespans: Sequence[Tuple[datetime, datetime]],
         temporary_coll: Collection,
         output_types: Sequence[str],
@@ -94,8 +100,6 @@ def validate(
 
     # check arguments
     try:
-        check(isinstance(action_id, int), None, 'parameter action_id  must be int')
-
         check(isinstance(timespans, list) and len(timespans) > 0, None, 'no timespans given')
 
         check(all(len(timespan) == 2 and isinstance(timespan[0], datetime) and
@@ -117,17 +121,16 @@ def validate(
 
         try:
             # check that it has the correct fieldnames
-            check(doc.keys() == FIELDS, obsid, 'wrong fields')
-
-            # check that action id is correct
-            check(doc['action_id'] == action_id, obsid, 'wrong action id')
+            check(doc.keys() == INPUT_FIELDS, obsid, 'wrong fields', 'expected {}, got {}'.format(INPUT_FIELDS, doc.keys()))
 
             # check that analyzer id is correct
-            check(doc['analyzer_id'] == analyzer_id, obsid, 'wrong analyzer id')
+            check(doc['analyzer_id'] == analyzer_id, obsid, 'wrong analyzer id',
+                  'expected {}, got {}'.format(analyzer_id, doc['analyzer_id']))
 
             # check that condition is defined in outputs
             condition = doc['condition']
-            check(condition in output_types, obsid, 'condition not declared in output_types')
+            check(condition in output_types, obsid,
+                  'condition not declared in output_types', 'expected one of {}, got {}'.format(output_types, condition))
 
             # check that deprecation value is correct
             check(doc['deprecated'] is False, obsid, 'deprecation setting incorrect')
@@ -152,12 +155,12 @@ def validate(
 
             valid_count += 1
         except ValidationError as e:
-            errors.append((e.obsid, e.reason))
+            errors.append((e.obsid, e.reason, e.extra))
 
             if len(errors) > abort_max_errors:
                 break
         except (KeyError, TypeError) as e:
-            errors.append((None, repr(e)))
+            errors.append((None, str(e), repr(e)))
 
             if len(errors) > abort_max_errors:
                 break
@@ -209,21 +212,32 @@ def find_counterpart(doc, other_coll: Collection):
 
 
 def commit(analyzer_id: int,
-           action_id: int,
+           action_id_creator: Callable[[], int],
            timespans: Sequence[Interval],
            temporary_coll: Collection,
            output_coll: Collection,
            output_types: Sequence[str],
            abort_max_errors=100):
 
-    valid_count, errors = validate(analyzer_id, action_id, timespans, temporary_coll, output_types, abort_max_errors)
+
+    print("a. validating.")
+    valid_count, errors = validate(analyzer_id, timespans, temporary_coll, output_types, abort_max_errors)
 
     if len(errors) > 0:
-        return valid_count, errors
+        return valid_count, errors, 0
+
+    # create and set action_id
+    action_id = action_id_creator()
+
+    if not isinstance(action_id, int) or action_id < 0:
+        return 0, [(None, "action id has to be a non-negative integer.")], action_id
+
+    temporary_coll.update_many({}, {'$set': {'action_id': action_id}})
 
     # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
     # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
 
+    print("b. determine deprecation candidates")
     def create_timespan_subquery(timespan: Interval):
         return {'$or': [
             {'time': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
@@ -238,19 +252,25 @@ def commit(analyzer_id: int,
                         '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
     # 1. first deprecate all candidates and update action_id
+    # TODO should action_id be an array of tuple (action_id, True/False)
     output_coll.update_many(candidates_query, {'$set': {'deprecated': True, 'action_id': action_id}})
 
+    print("c. find candidates")
     # 2. find all observations that exist both in the output collection and in the temporary collection
     candidates = output_coll.find(candidates_query)
+    print("d. find counterparts and mark them")
     pairs = filter(lambda x: x[1] is not None, ((candidate, find_counterpart(candidate, temporary_coll)) for candidate in candidates))
 
     # 3. mark all of them in the temporary collection
     mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'$set': {'output_id': pair[0]['_id']}}) for pair in pairs)
 
     # unfortunately bulk_write does not accept iterators. in the mongodb docs, the server limit is 1000 ops.
+    print("blapp")
     for block in grouper(mark_ops, 1000):
+        print("blupp")
         temporary_coll.bulk_write(list(block))
 
+    print("e. insert or undeprecate observations.")
     # 4. commit changes into output collection
     def create_output_ops():
         # generator that iterates over temporary coll and create operations for output collection
@@ -265,44 +285,92 @@ def commit(analyzer_id: int,
     for block in grouper(create_output_ops(), 1000):
         output_coll.bulk_write(list(block))
 
+    print("f. done. drop temporary collection")
     # 5. finally delete collection
     temporary_coll.drop()
 
-    return valid_count, []
+    return valid_count, [], action_id
 
 class Validator:
-    def __init__(self, analyzers_coll: Collection, analysis_db: Database, output_coll: Collection):
+    def __init__(self, analyzers_coll: Collection, analysis_db: Database,
+                 output_coll: Collection, id_coll: Collection, uploads_coll: Collection,
+                 action_log: Collection):
         self.analyzer_state = AnalyzerState('validator', analyzers_coll)
         self.output_coll = output_coll
         self.analysis_db = analysis_db
+        self.uploads_coll = uploads_coll
+        self.action_log = action_log
 
-    def check_for_work(self):
+        id_factory = AutoIncrementFactory(id_coll)
+        self._action_id_creator = id_factory.get_incrementor('action_id')
+
+    def check_for_uploads(self):
+        """
+        Assign action_id to every completed upload
+        """
+        def set_action_id_ops() -> Sequence[Tuple[UpdateOne, InsertOne]]:
+            find_query = {
+                'complete': True,
+                'action_id': {'$exists': False},
+                'meta.format': {'$exists': True},
+                'meta.start_time': {'$exists': True},
+                'meta.stop_time': {'$exists': True}
+            }
+
+            cursor = self.uploads_coll.find(find_query).sort('timestamp')
+            for upload in cursor:
+                action_id = self._action_id_creator()
+                print("assign action id {} to upload {}".format(action_id, upload['_id']))
+                uploads_query = UpdateOne({'_id': upload['_id']}, {'$set': {'action_id': action_id}})
+                action_log_query = InsertOne({
+                    '_id': action_id,
+                    'output_formats': [upload['meta']['format']],
+                    'timespan': [upload['meta']['start_time'], upload['meta']['stop_time']],
+                    'action': 'upload',
+                    'upload_id': upload['_id']
+                })
+
+                yield uploads_query, action_log_query
+
+        for uploads_block, action_log_block in grouper_transpose(set_action_id_ops(), 1000):
+            self.uploads_coll.bulk_write(uploads_block)
+            self.action_log.bulk_write(action_log_block)
+
+
+
+    def check_for_analyzers(self):
         executed = self.analyzer_state.executed_analyzers()
-        print("validator: check for work")
         for analyzer in executed:
             # check for wish
             if self.analyzer_state.check_wish(analyzer, 'cancel'):
                 print("validator: cancelled {} upon request".format(analyzer['_id']))
                 continue
 
-            print("validating and committing {} action id {}".format(analyzer['_id'], analyzer['action_id']))
+            print("validating and committing {}".format(analyzer['_id']))
 
             self.analyzer_state.transition(analyzer['_id'], 'executed', 'validating')
 
             exe_res = analyzer['execution_result']
             temporary_coll = self.analysis_db[exe_res['temporary_coll']]
-            valid_count, errors = commit(analyzer['_id'], analyzer['action_id'], exe_res['timespans'],
-                                         temporary_coll, self.output_coll, analyzer['output_types'])
+            valid_count, errors, action_id = commit(analyzer['_id'], self._action_id_creator, exe_res['timespans'],
+                                                    temporary_coll, self.output_coll, analyzer['output_types'])
+
+            # TODO add to action_log
 
             if len(errors) > 0:
-                print("analyzer {} with action id {} has at least {} valid records but {} have problems:".format(analyzer['_id'], analyzer['action_id'], valid_count, len(errors)))
+                print("analyzer {} with action id {} has at least {} valid records but {} have problems:".format(analyzer['_id'], action_id, valid_count, len(errors)))
                 for idx, error in enumerate(errors):
                     print("{}: {}".format(idx, error))
 
                 self.analyzer_state.transition_to_error(analyzer['_id'], 'error when executing validator:\n' + '\n'.join((str(error) for error in errors)))
             else:
-                print("successfully commited analyzer {} run with action id {}. {} records inserted".format(analyzer['_id'], analyzer['action_id'], valid_count))
-                self.analyzer_state.transition(analyzer['_id'], 'validating', 'validated')
+                print("successfully commited analyzer {} run with action id {}. {} records inserted".format(analyzer['_id'], action_id, valid_count))
+                self.analyzer_state.transition(analyzer['_id'], 'validating', 'sensing', {'action_id': action_id})
+
+    def check_for_work(self):
+        print("validator: check for work")
+        self.check_for_analyzers()
+        self.check_for_uploads()
 
     def run(self):
         # TODO consider using threads
@@ -313,7 +381,8 @@ class Validator:
 def main():
     mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
 
-    sup = Validator(mongo.analysis.analyzers, mongo.analysis, mongo.analysis.observations)
+    sup = Validator(mongo.analysis.analyzers, mongo.analysis, mongo.analysis.observations, mongo.analysis.idfactory,
+                    mongo.uploads.uploads, mongo.analysis.action_log)
 
     sup.run()
 
