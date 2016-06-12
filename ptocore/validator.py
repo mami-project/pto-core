@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Sequence, Tuple, Callable
 from time import sleep
+from hashlib import sha1
 
 import re
 from bson import CodecOptions
@@ -16,8 +17,14 @@ from .mongoutils import AutoIncrementFactory
 
 Interval = Tuple[datetime, datetime]
 
-INPUT_FIELDS = {'_id', 'deprecated', 'condition', 'time', 'path', 'analyzer_id', 'sources', 'value'}
-ADD_FIELDS = {'action_id', 'hash'}
+
+VALIDATION_COMPARE_FIELDS = {'condition', 'time', 'path', 'value', 'sources', 'analyzer_id'}
+
+VALIDATION_INPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'_id'}
+
+VALIDATION_OUTPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'action_id', 'deprecated'}
+
+COMPARE_PROJECTION = {'_id': 0, 'condition': 1, 'path': 1, 'analyzer_id': 1, 'sources': 1, 'value': 1}
 
 codec_opts = CodecOptions(document_class=OrderedDict)
 
@@ -36,7 +43,7 @@ def schema_validator(analyzer_id, action_id: int, timespan: Interval, outputs: S
             # complete
             {'analyzer_id':  {'$type': 'int', '$eq': analyzer_id}},
             {'condition':   {'$type': 'string', '$in': outputs}},
-            {'deprecated':  False},
+            #{'deprecated':  False},
             # TODO tell schema mongodb schema validator action_id don't care if exist or not
             # incomplete validation
             {'source':      {'$exists': True}},
@@ -84,6 +91,53 @@ def grouper_transpose(iterable, count, tuple_length=2):
             newl.append([tup[n] for tup in group])
         yield newl
 
+
+def dict_to_sorted_list(obj):
+    if isinstance(obj, dict):
+        return [dict_to_sorted_list([key, obj[key]]) for key in sorted(obj.keys())]
+    elif isinstance(obj, list):
+        return [dict_to_sorted_list(elem) for elem in obj]
+    else:
+        return obj
+
+
+def rflatten(obj):
+    out = []
+    for elem in obj:
+        if isinstance(elem, list):
+            out.append('[')
+            out.extend(rflatten(elem))
+            out.append(']')
+        else:
+            out.append(elem)
+    return out
+
+
+def create_hash(obs):
+    hs = sha1()
+
+    cmp = {key: value for key, value in obs.items() if key in VALIDATION_COMPARE_FIELDS}
+
+    for elem in rflatten(dict_to_sorted_list(cmp)):
+        hs.update(str(elem).encode('utf-8'))
+
+    return hs.digest()
+
+
+def equal_observation(a, b):
+    return all(a[key] == b[key] for key in VALIDATION_COMPARE_FIELDS)
+
+
+def find_counterpart(candidate, temporary_coll):
+    hash = create_hash(candidate)
+
+    for counterpart in temporary_coll.find({'hash': hash}):
+        if equal_observation(candidate, counterpart):
+            return candidate, counterpart
+
+    return None
+
+
 def check(cond, obsid, reason: str, extra: str=''):
     if not cond:
         raise ValidationError(obsid, reason, extra)
@@ -121,7 +175,7 @@ def validate(
 
         try:
             # check that it has the correct fieldnames
-            check(doc.keys() == INPUT_FIELDS, obsid, 'wrong fields', 'expected {}, got {}'.format(INPUT_FIELDS, doc.keys()))
+            check(doc.keys() == VALIDATION_INPUT_FIELDS, obsid, 'wrong fields', 'expected {}, got {}'.format(VALIDATION_INPUT_FIELDS, doc.keys()))
 
             # check that analyzer id is correct
             check(doc['analyzer_id'] == analyzer_id, obsid, 'wrong analyzer id',
@@ -131,9 +185,6 @@ def validate(
             condition = doc['condition']
             check(condition in output_types, obsid,
                   'condition not declared in output_types', 'expected one of {}, got {}'.format(output_types, condition))
-
-            # check that deprecation value is correct
-            check(doc['deprecated'] is False, obsid, 'deprecation setting incorrect')
 
             # check that time is within any timespan
             time = doc['time']
@@ -168,49 +219,6 @@ def validate(
     return valid_count, errors
 
 
-def find_counterpart(doc, other_coll: Collection):
-    """
-    Find the document in other_coll which matches doc by the fields
-    analyzer_id, condition, path, sources, time and value
-    :return: The corresponding document or None if there is no match.
-    """
-
-    # Reasons why value is compared in python:
-    #
-    # 1. Remember in mongodb, to match documents the fields have to be the in the same order.
-    # And in python, dictionary is unordered by definition. So either we require each analyzer to
-    # insert documents in the same order (ex. sorted) or we perform the equality check in python.
-    #
-    # 2a.Before single value, now list. equality check is "any item match"
-    # 2b.equality check will match if any array item matches.
-    #    assume there is doc = {'value': [1, 2, 3]} then query {'value': 2} will match.
-
-    if isinstance(doc['time'], datetime):
-        time_check = {'time': doc['time']}
-    else:
-        time_check = {'$and': [
-            {'time.from': doc['time']['from']},
-            {'time.to': doc['time']['to']}
-        ]}
-
-    query = {
-        'analyzer_id': doc['analyzer_id'],
-        'condition': doc['condition'],
-        'path': doc['path'],
-        'sources': doc['sources'],
-        'value': doc['value'], #-> perform in python
-    }
-    query.update(time_check)
-
-    counterparts = other_coll.find(query)
-
-    for counterpart in counterparts:
-        if counterpart['value'] == doc['value']:
-            return counterpart
-    else:
-        return None
-
-
 def commit(analyzer_id: int,
            action_id_creator: Callable[[], int],
            timespans: Sequence[Interval],
@@ -232,7 +240,7 @@ def commit(analyzer_id: int,
     if not isinstance(action_id, int) or action_id < 0:
         return 0, [(None, "action id has to be a non-negative integer.")], action_id
 
-    temporary_coll.update_many({}, {'$set': {'action_id': action_id}})
+    temporary_coll.update_many({}, {'$set': {'action_id': action_id, 'deprecated': False}})
 
     # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
     # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
@@ -251,6 +259,13 @@ def commit(analyzer_id: int,
     candidates_query = {'analyzer_id': analyzer_id,
                         '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
+    # create hashes
+    for obs_group in grouper(temporary_coll.find(), 1000):
+        bulk = [UpdateOne({'_id': obs['_id']}, {'$set': {'hash': create_hash(obs)}}) for obs in obs_group]
+        temporary_coll.bulk_write(bulk)
+
+    temporary_coll.create_index('hash')
+
     # 1. first deprecate all candidates and update action_id
     # TODO should action_id be an array of tuple (action_id, True/False)
     output_coll.update_many(candidates_query, {'$set': {'deprecated': True, 'action_id': action_id}})
@@ -258,8 +273,10 @@ def commit(analyzer_id: int,
     print("c. find candidates")
     # 2. find all observations that exist both in the output collection and in the temporary collection
     candidates = output_coll.find(candidates_query)
+
     print("d. find counterparts and mark them")
-    pairs = filter(lambda x: x[1] is not None, ((candidate, find_counterpart(candidate, temporary_coll)) for candidate in candidates))
+
+    pairs = filter(None, (find_counterpart(candidate, temporary_coll) for candidate in candidates))
 
     # 3. mark all of them in the temporary collection
     mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'$set': {'output_id': pair[0]['_id']}}) for pair in pairs)
@@ -271,16 +288,23 @@ def commit(analyzer_id: int,
         temporary_coll.bulk_write(list(block))
 
     print("e. insert or undeprecate observations.")
+
     # 4. commit changes into output collection
     def create_output_ops():
+        kept = 0
+        inserted = 0
         # generator that iterates over temporary coll and create operations for output collection
         # note that the find query projection is {'_id': 0}: using this we can simply insert the document
         # into the output collection
         for doc in temporary_coll.find({}, {'_id': 0}):
             if 'output_id' in doc:
                 yield UpdateOne({'_id': doc['output_id']}, {'$set': {'deprecated': False}})
+                kept+=1
             else:
                 yield InsertOne(doc)
+                inserted+=1
+
+        print("commit stats: {} kept, {} inserted".format(kept, inserted))
 
     for block in grouper(create_output_ops(), 1000):
         output_coll.bulk_write(list(block))
