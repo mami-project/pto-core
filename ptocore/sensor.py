@@ -1,10 +1,11 @@
+from time import sleep
+
 from pymongo import MongoClient
 from pymongo.collection import Collection
 
-from .sensitivity import Sensitivity
+from .sensitivity import Sensitivity, find_last_run
 from .analyzerstate import AnalyzerState
-
-from time import sleep
+from . import repomanager
 
 
 class Sensor:
@@ -38,11 +39,27 @@ class Sensor:
                 # TODO set 'stalled_reason' = "input unstable" in analyzers_coll
                 continue
 
-            stv = Sensitivity(self.action_log, analyzer['_id'], analyzer['input_formats'], analyzer['input_types'])
+            git_url = repomanager.get_repository_url(analyzer['working_dir'])
+            git_commit = repomanager.get_repository_commit(analyzer['working_dir'])
+
+            # check if code has changed and request rebuild if so.
+            # if last_run is None, then the value of rebuild_all does not matter
+            last_run = find_last_run(analyzer['_id'], self.action_log)
+            rebuild_all = True
+            if last_run is not None:
+                if last_run['git_url'] == git_url and last_run['git_commit'] == git_commit:
+                    rebuild_all = False
+
+            # create sensitivity object, note that we don't know rebuild_all yet.
+            stv = Sensitivity(self.action_log, analyzer['_id'], analyzer['input_formats'],
+                              analyzer['input_types'], rebuild_all)
+
+            # find out if code has changed since last run and decide if the analyzer
+            # has to rebuild all observations
 
             if stv.any_changes():
                 # okay let's do this. change state of analyzer to planned.
-                self.analyzer_state.transition(analyzer['_id'], 'sensing', 'planned')
+                self.analyzer_state.transition(analyzer['_id'], 'sensing', 'planned', {'rebuild_all': rebuild_all})
 
                 # the input types and output types specified in the analyzer are now blocked
 

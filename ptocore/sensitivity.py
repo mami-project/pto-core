@@ -19,24 +19,34 @@ def extend_hourly(interval: Interval) -> Interval:
 
     return start, stop
 
+def find_last_run(analyzer_id, action_log) -> dict:
+    docs = action_log.find({'action': 'analyze', 'analyzer_id': analyzer_id})\
+        .sort('_id', pymongo.DESCENDING).limit(1)
+    try:
+        return docs[0]
+    except IndexError:
+        return None
+
 class Sensitivity:
     def __init__(self, action_log: Collection, analyzer_id: str,
-                 input_formats: Sequence[str], input_types: Sequence[str]):
+                 input_formats: Sequence[str], input_types: Sequence[str],
+                 rebuild_all: bool):
         self.action_log = action_log
         self.analyzer_id = analyzer_id
         self.input_formats = input_formats
         self.input_types = input_types
+        self.rebuild_all = rebuild_all
 
-    def find_last_run(self) -> int:
-        docs = self.action_log.find({'action': 'analyze', 'analyzer_id': self.analyzer_id})\
-            .sort('_id', pymongo.DESCENDING).limit(1)
-        try:
-            return docs[0]['_id']
-        except IndexError:
-            return -1
+    def find_last_run_id(self) -> int:
+        last_run = find_last_run(self.analyzer_id, self.action_log)
+        return last_run['_id'] if last_run is not None else -1
 
     def changes_since(self) -> Tuple[int, pymongo.cursor.Cursor]:
-        last_run_id = self.find_last_run()
+        if not self.rebuild_all:
+            last_run_id = self.find_last_run_id()
+        else:
+            last_run_id = -1
+
         changes = self.action_log.find({'_id': {'$gt': last_run_id},
                                    '$or': [{'output_types': {'$in': self.input_types}},
                                            {'output_formats': {'$in': self.input_formats}}]
@@ -58,15 +68,16 @@ class Sensitivity:
         tl = Timeline()
         max_action_id = last_run_id
         for change in changes:
-            start, end = change['timespan']
-            tl.add(start, end)
+            for timespan in change['timespans']:
+                start, end = timespan
+                tl.add(start, end)
 
             if max_action_id < change['_id']:
                 max_action_id = change['_id']
 
         return max_action_id, tl.intervals
 
-    def naive(self) -> Sequence[Interval]:
+    def naive(self) -> Tuple[int, Sequence[Interval]]:
         last_run_id, changes = self.changes_since()
 
         max_doc = list(changes.sort('_id', pymongo.DESCENDING).limit(1))
@@ -78,14 +89,15 @@ class Sensitivity:
         else:
             return max_action_id, []
 
-    def aggregating(self, extend_func: Callable[[Interval], Interval]) -> Sequence[Interval]:
+    def aggregating(self, extend_func: Callable[[Interval], Interval]) -> Tuple[int, Sequence[Interval]]:
         last_run_id, changes = self.changes_since()
 
         tl = Timeline()
         max_action_id = last_run_id
         for change in changes:
-            timespan = extend_func(change['timespan'])
-            tl.add(timespan[0], timespan[1])
+            for timespan in change['timespans']:
+                timespan_extended = extend_func(timespan)
+                tl.add(timespan_extended[0], timespan_extended[1])
 
             if max_action_id < change['_id']:
                 max_action_id = change['_id']

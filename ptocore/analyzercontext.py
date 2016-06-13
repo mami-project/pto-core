@@ -134,8 +134,10 @@ class AnalyzerContext:
         self.input_formats = ans['input_formats']
         self.input_types = ans['input_types']
         self.output_types = ans['output_types']
+        self.rebuild_all = ans['rebuild_all']
 
-        self.sensitivity = Sensitivity(self.action_log, self.analyzer_id, self.input_formats, self.input_types)
+        self.sensitivity = Sensitivity(self.action_log, self.analyzer_id, self.input_formats,
+                                       self.input_types, self.rebuild_all)
 
         # more contexts are loaded on demand
         self._spark_context = None
@@ -208,7 +210,6 @@ class AnalyzerContext:
             mms = mms.union(mm)
 
         return mms
-
 
     def get_distributed(self):
         if self._distributed_executor is None:

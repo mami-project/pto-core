@@ -13,6 +13,8 @@ import subprocess
 import dateutil.parser
 from pymongo import MongoClient
 
+from .repomanager import clean_repository
+
 Interval = Tuple[datetime, datetime]
 
 class AgentError(Exception):
@@ -24,7 +26,8 @@ class AnalyzerError(Exception):
 class AgentBase:
     # TODO: check mongo return values & exceptions
     def __init__(self, identifier, token, mongo: MongoClient, analyzer_id,
-                 input_formats: Sequence[str], input_types: Sequence[str], output_types: Sequence[str]):
+                 input_formats: Sequence[str], input_types: Sequence[str], output_types: Sequence[str],
+                 rebuild_all: bool=False):
         self.analyzer_id = analyzer_id
         self.identifier = identifier
 
@@ -34,6 +37,8 @@ class AgentBase:
         self.input_formats = input_formats
         self.input_types = input_types
         self.output_types = output_types
+
+        self.rebuild_all = rebuild_all
 
         # set by set_result_info in analyzercontext. is mandatory for module analyzers, no effect for online analyzers.
         self.result_timespans = None
@@ -124,7 +129,8 @@ class AgentBase:
                 'analyzer_id': self.analyzer_id,
                 'input_formats': self.input_formats,
                 'input_types': self.input_types,
-                'output_types': self.output_types
+                'output_types': self.output_types,
+                'rebuild_all': self.rebuild_all
             }
         elif action == 'get_spark':
             return {
@@ -205,14 +211,15 @@ class ModuleAgent(AgentBase):
                  input_types: Sequence[str],
                  output_types: Sequence[str],
                  cmdline: Sequence[str],
-                 cwd: str,
+                 working_dir: str,
+                 rebuild_all: bool,
                  mongo: MongoClient):
 
         super().__init__(identifier, token, mongo,
-                         analyzer_id, input_formats, input_types, output_types)
+                         analyzer_id, input_formats, input_types, output_types, rebuild_all)
 
         self.cmdline = cmdline
-        self.cwd = cwd
+        self.working_dir = working_dir
 
         # inherit current process environment (this is the default popen behavior) and add credentials
         self.env = dict(os.environ)
@@ -223,6 +230,7 @@ class ModuleAgent(AgentBase):
         self.analyzer_stderr = []
 
         try:
+            clean_repository(working_dir)
             self._create_collection(delete_after=False)
             self._create_user()
         except:
@@ -246,7 +254,7 @@ class ModuleAgent(AgentBase):
     async def execute(self):
         print("executing analyzer...")
 
-        proc = await asyncio.create_subprocess_exec(*self.cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env, cwd=self.cwd)
+        proc = await asyncio.create_subprocess_exec(*self.cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env, cwd=self.working_dir)
 
         stdout, stderr = await proc.communicate()
         self.analyzer_stdout = stdout.decode()

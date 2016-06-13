@@ -14,6 +14,7 @@ from pymongo.operations import UpdateOne, InsertOne
 from . import valuechecks
 from .analyzerstate import AnalyzerState
 from .mongoutils import AutoIncrementFactory
+from . import repomanager
 
 Interval = Tuple[datetime, datetime]
 
@@ -220,13 +221,23 @@ def validate(
 
 
 def commit(analyzer_id: int,
+           repo_path: str,
            action_id_creator: Callable[[], int],
            timespans: Sequence[Interval],
            temporary_coll: Collection,
            output_coll: Collection,
            output_types: Sequence[str],
+           action_log: Collection,
            abort_max_errors=100):
 
+    # repository is cleaned by supervisor prior to analyzer module execution
+    try:
+        git_commit = repomanager.get_repository_commit(repo_path)
+        git_url = repomanager.get_repository_url(repo_path)
+    except repomanager.RepositoryError as e:
+        raise ValidationError(None, "either working_dir is not pointing to a git repository"
+                              " or it's not possible to obtain commit and git url.",
+                              "analyzer: '{}', working_dir: '{}'.".format(analyzer_id, repo_path)) from e
 
     print("a. validating.")
     valid_count, errors = validate(analyzer_id, timespans, temporary_coll, output_types, abort_max_errors)
@@ -306,6 +317,18 @@ def commit(analyzer_id: int,
 
         print("commit stats: {} kept, {} inserted".format(kept, inserted))
 
+    # action log
+    action_log.insert_one({
+        '_id': action_id,
+        'output_types': output_types,
+        'timespans': timespans,
+        'action': 'analyze',
+        'analyzer_id': analyzer_id,
+        'git_url': git_url,
+        'git_commit': git_commit
+    })
+
+    print("perform critical write")
     for block in grouper(create_output_ops(), 1000):
         output_coll.bulk_write(list(block))
 
@@ -335,6 +358,7 @@ class Validator:
         def set_action_id_ops() -> Sequence[Tuple[UpdateOne, InsertOne]]:
             find_query = {
                 'complete': True,
+                'deprecated': False,
                 'action_id': {'$exists': False},
                 'meta.format': {'$exists': True},
                 'meta.start_time': {'$exists': True},
@@ -346,10 +370,13 @@ class Validator:
                 action_id = self._action_id_creator()
                 print("assign action id {} to upload {}".format(action_id, upload['_id']))
                 uploads_query = UpdateOne({'_id': upload['_id']}, {'$set': {'action_id': action_id}})
+
+                timespans = [(upload['meta']['start_time'], upload['meta']['stop_time'])]
+
                 action_log_query = InsertOne({
                     '_id': action_id,
                     'output_formats': [upload['meta']['format']],
-                    'timespan': [upload['meta']['start_time'], upload['meta']['stop_time']],
+                    'timespans': timespans,
                     'action': 'upload',
                     'upload_id': upload['_id']
                 })
@@ -359,8 +386,6 @@ class Validator:
         for uploads_block, action_log_block in grouper_transpose(set_action_id_ops(), 1000):
             self.uploads_coll.bulk_write(uploads_block)
             self.action_log.bulk_write(action_log_block)
-
-
 
     def check_for_analyzers(self):
         executed = self.analyzer_state.executed_analyzers()
@@ -376,10 +401,9 @@ class Validator:
 
             exe_res = analyzer['execution_result']
             temporary_coll = self.analysis_db[exe_res['temporary_coll']]
-            valid_count, errors, action_id = commit(analyzer['_id'], self._action_id_creator, exe_res['timespans'],
-                                                    temporary_coll, self.output_coll, analyzer['output_types'])
-
-            # TODO add to action_log
+            valid_count, errors, action_id = commit(analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
+                                                    exe_res['timespans'], temporary_coll, self.output_coll,
+                                                    analyzer['output_types'], self.action_log)
 
             if len(errors) > 0:
                 print("analyzer {} with action id {} has at least {} valid records but {} have problems:".format(analyzer['_id'], action_id, valid_count, len(errors)))

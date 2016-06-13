@@ -132,7 +132,7 @@ class Supervisor:
 
             agent = ModuleAgent(analyzer['_id'], identifier, token, self.host, self.port,
                                 analyzer['input_formats'], analyzer['input_types'], analyzer['output_types'],
-                                analyzer['command_line'], analyzer['working_dir'], self.mongo)
+                                analyzer['command_line'], analyzer['working_dir'], analyzer['rebuild_all'], self.mongo)
 
             self.agents[agent.identifier] = agent
 
