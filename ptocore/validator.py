@@ -2,12 +2,12 @@ from datetime import datetime
 from typing import Sequence, Tuple, Callable
 from time import sleep
 from hashlib import sha1
+import argparse
 
 import re
 from bson import CodecOptions
 from collections import OrderedDict
-from pymongo import MongoClient
-from pymongo.database import Database
+from pymongo.errors import BulkWriteError
 from pymongo.collection import Collection
 from pymongo.operations import UpdateOne, InsertOne
 
@@ -15,6 +15,7 @@ from . import valuechecks
 from .analyzerstate import AnalyzerState
 from .mongoutils import AutoIncrementFactory
 from . import repomanager
+from .coreconfig import CoreConfig
 
 Interval = Tuple[datetime, datetime]
 
@@ -339,37 +340,37 @@ def commit(analyzer_id: int,
     return valid_count, [], action_id
 
 class Validator:
-    def __init__(self, analyzers_coll: Collection, analysis_db: Database,
-                 output_coll: Collection, id_coll: Collection, uploads_coll: Collection,
-                 action_log: Collection):
-        self.analyzer_state = AnalyzerState('validator', analyzers_coll)
-        self.output_coll = output_coll
-        self.analysis_db = analysis_db
-        self.uploads_coll = uploads_coll
-        self.action_log = action_log
+    def __init__(self, core_config: CoreConfig):
+        self.core_config = core_config
+        self.analyzer_state = AnalyzerState('validator', core_config.analyzers_coll)
 
-        id_factory = AutoIncrementFactory(id_coll)
-        self._action_id_creator = id_factory.get_incrementor('action_id')
+        # the validator is the only component generating action_ids, therefore create_if_missing=True is not a problem.
+        idfactory = AutoIncrementFactory(core_config.idfactory_coll)
+        self._action_id_creator = idfactory.get_incrementor('action_id', create_if_missing=True)
 
     def check_for_uploads(self):
         """
         Assign action_id to every completed upload
         """
+
+        cc = self.core_config
+
+        action_id_field = 'action_id.'+cc.environment
         def set_action_id_ops() -> Sequence[Tuple[UpdateOne, InsertOne]]:
             find_query = {
                 'complete': True,
                 'deprecated': False,
-                'action_id': {'$exists': False},
+                action_id_field: {'$exists': False},
                 'meta.format': {'$exists': True},
                 'meta.start_time': {'$exists': True},
                 'meta.stop_time': {'$exists': True}
             }
 
-            cursor = self.uploads_coll.find(find_query).sort('timestamp')
+            cursor = cc.metadata_coll.find(find_query).sort('timestamp')
             for upload in cursor:
                 action_id = self._action_id_creator()
                 print("assign action id {} to upload {}".format(action_id, upload['_id']))
-                uploads_query = UpdateOne({'_id': upload['_id']}, {'$set': {'action_id': action_id}})
+                uploads_query = UpdateOne({'_id': upload['_id']}, {'$set': {action_id_field: action_id}})
 
                 timespans = [(upload['meta']['start_time'], upload['meta']['stop_time'])]
 
@@ -383,11 +384,18 @@ class Validator:
 
                 yield uploads_query, action_log_query
 
-        for uploads_block, action_log_block in grouper_transpose(set_action_id_ops(), 1000):
-            self.uploads_coll.bulk_write(uploads_block)
-            self.action_log.bulk_write(action_log_block)
+        try:
+            for uploads_block, action_log_block in grouper_transpose(set_action_id_ops(), 1000):
+                cc.metadata_coll.bulk_write(uploads_block)
+                cc.action_log.bulk_write(action_log_block)
+        except BulkWriteError as e:
+            # most likely a configuration error
+            print(e.details)
+            raise
+
 
     def check_for_analyzers(self):
+        cc = self.core_config
         executed = self.analyzer_state.executed_analyzers()
         for analyzer in executed:
             # check for wish
@@ -400,10 +408,10 @@ class Validator:
             self.analyzer_state.transition(analyzer['_id'], 'executed', 'validating')
 
             exe_res = analyzer['execution_result']
-            temporary_coll = self.analysis_db[exe_res['temporary_coll']]
+            temporary_coll = cc.temporary_db[exe_res['temporary_coll']]
             valid_count, errors, action_id = commit(analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
-                                                    exe_res['timespans'], temporary_coll, self.output_coll,
-                                                    analyzer['output_types'], self.action_log)
+                                                    exe_res['timespans'], temporary_coll, cc.observations_coll,
+                                                    analyzer['output_types'], cc.action_log)
 
             if len(errors) > 0:
                 print("analyzer {} with action id {} has at least {} valid records but {} have problems:".format(analyzer['_id'], action_id, valid_count, len(errors)))
@@ -420,19 +428,20 @@ class Validator:
         self.check_for_analyzers()
         self.check_for_uploads()
 
-    def run(self):
-        # TODO consider using threads
-        while True:
-            self.check_for_work()
-            sleep(4)
 
 def main():
-    mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
+    desc = 'Monitor the observatory for changes and order execution of analyzer modules.'
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument('config_file', type=argparse.FileType('rt'))
+    args = parser.parse_args()
 
-    sup = Validator(mongo.analysis.analyzers, mongo.analysis, mongo.analysis.observations, mongo.analysis.idfactory,
-                    mongo.uploads.uploads, mongo.analysis.action_log)
+    cc = CoreConfig('validator', args.config_file)
 
-    sup.run()
+    val = Validator(cc)
+
+    while True:
+        val.check_for_work()
+        sleep(4)
 
 if __name__ == "__main__":
     main()

@@ -2,16 +2,18 @@ import asyncio
 import json
 import traceback
 from typing import Set
+import argparse
 
 import os
 from functools import partial
-from pymongo import MongoClient
+from pymongo.database import Database
 from pymongo.collection import Collection
 
 from .agent import OnlineAgent, ModuleAgent
 from .analyzerstate import AnalyzerState
 from .jsonprotocol import JsonProtocol
 from .mongoutils import AutoIncrementFactory
+from .coreconfig import CoreConfig
 
 
 class SupervisorServer(JsonProtocol):
@@ -37,18 +39,16 @@ class SupervisorServer(JsonProtocol):
 
 
 class Supervisor:
-    def __init__(self, mongo: MongoClient, analyzers_coll: Collection, id_coll: Collection, loop=None, host='localhost', port=33424):
+    def __init__(self, core_config: CoreConfig, loop=None):
         self.loop = loop or asyncio.get_event_loop()
 
-        id_factory = AutoIncrementFactory(id_coll)
-        self._agent_id_creator = id_factory.get_incrementor('agent_id')
+        self.core_config = core_config
 
+        # the supervisor is the only component generating agent_ids, therefore create_if_missing=True is not a problem.
+        idfactory = AutoIncrementFactory(self.core_config.idfactory_coll)
+        self._agent_id_creator = idfactory.get_incrementor('agent_id', create_if_missing=True)
 
-        self.host = host
-        self.port = port
-
-        self.mongo = mongo
-        self.analyzer_state = AnalyzerState('supervisor', analyzers_coll)
+        self.analyzer_state = AnalyzerState('supervisor', self.core_config.analyzers_coll)
 
         self.agents = {}
 
@@ -56,7 +56,9 @@ class Supervisor:
 
         # todo delete users and collections
 
-        server_coro = self.loop.create_server(lambda: SupervisorServer(self), host=self.host, port=self.port)
+        server_coro = self.loop.create_server(lambda: SupervisorServer(self),
+                                              host='localhost',
+                                              port=self.core_config.supervisor_port)
         self.server = self.loop.run_until_complete(server_coro)
 
     def analyzer_request(self, identifier, token, action, payload):
@@ -82,11 +84,12 @@ class Supervisor:
         identifier = 'online_'+str(self._agent_id_creator())
         token = os.urandom(16).hex()
 
-        agent = OnlineAgent(identifier, token, self.mongo)
+        agent = OnlineAgent(identifier, token, self.core_config)
 
         self.agents[agent.identifier] = agent
 
-        credentials = { 'identifier': agent.identifier, 'token': token, 'host': self.host, 'port': self.port }
+        credentials = { 'identifier': agent.identifier, 'token': token,
+                        'host': 'localhost', 'port': self.core_config.supervisor_port }
 
         return credentials, agent
 
@@ -130,9 +133,9 @@ class Supervisor:
             identifier = 'module_'+str(self._agent_id_creator())
             token = os.urandom(16).hex()
 
-            agent = ModuleAgent(analyzer['_id'], identifier, token, self.host, self.port,
+            agent = ModuleAgent(analyzer['_id'], identifier, token, self.core_config,
                                 analyzer['input_formats'], analyzer['input_types'], analyzer['output_types'],
-                                analyzer['command_line'], analyzer['working_dir'], analyzer['rebuild_all'], self.mongo)
+                                analyzer['command_line'], analyzer['working_dir'], analyzer['rebuild_all'])
 
             self.agents[agent.identifier] = agent
 
@@ -151,10 +154,16 @@ class Supervisor:
 
 
 def main():
-    loop = asyncio.get_event_loop()
-    mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
+    desc = 'Manage execution of analyzer modules.'
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument('config_file', type=argparse.FileType('rt'))
+    args = parser.parse_args()
 
-    sup = Supervisor(mongo, mongo.analysis.analyzers, mongo.analysis.idfactory, loop)
+    cc = CoreConfig('supervisor', args.config_file)
+
+    loop = asyncio.get_event_loop()
+
+    sup = Supervisor(cc, loop)
 
     # create online supervisor and print account details
     credentials, agent = sup.create_online_agent()

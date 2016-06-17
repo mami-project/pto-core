@@ -1,10 +1,11 @@
 from time import sleep
+import argparse
 
-from pymongo import MongoClient
 from pymongo.collection import Collection
 
 from .sensitivity import Sensitivity, find_last_run
 from .analyzerstate import AnalyzerState
+from .coreconfig import CoreConfig
 from . import repomanager
 
 
@@ -39,8 +40,9 @@ class Sensor:
                 # TODO set 'stalled_reason' = "input unstable" in analyzers_coll
                 continue
 
-            git_url = repomanager.get_repository_url(analyzer['working_dir'])
-            git_commit = repomanager.get_repository_commit(analyzer['working_dir'])
+            repo_path = analyzer['working_dir']
+            git_url = repomanager.get_repository_url(repo_path)
+            git_commit = repomanager.get_repository_commit(repo_path)
 
             # check if code has changed and request rebuild if so.
             # if last_run is None, then the value of rebuild_all does not matter
@@ -63,19 +65,19 @@ class Sensor:
 
                 # the input types and output types specified in the analyzer are now blocked
 
-    def run(self):
-        # TODO consider using threads
-        while True:
-            self.check()
-            sleep(4)
-
 
 def main():
-    mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
+    desc = 'Monitor the observatory for changes and order execution of analyzer modules.'
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument('config_file', type=argparse.FileType('rt'))
+    args = parser.parse_args()
 
-    sens = Sensor(mongo.analysis.analyzers, mongo.analysis.action_log)
+    cc = CoreConfig('sensor', args.config_file)
 
-    sens.run()
+    sens = Sensor(cc.analyzers_coll, cc.action_log)
+    while True:
+        sens.check()
+        sleep(4)
 
 if __name__ == "__main__":
     main()

@@ -11,28 +11,31 @@ import os
 import subprocess
 
 import dateutil.parser
-from pymongo import MongoClient
 
 from .repomanager import clean_repository
+from .coreconfig import CoreConfig
 
 Interval = Tuple[datetime, datetime]
+
 
 class AgentError(Exception):
     pass
 
+
 class AnalyzerError(Exception):
     pass
 
+
 class AgentBase:
     # TODO: check mongo return values & exceptions
-    def __init__(self, identifier, token, mongo: MongoClient, analyzer_id,
+    def __init__(self, identifier, token, core_config: CoreConfig, analyzer_id: str,
                  input_formats: Sequence[str], input_types: Sequence[str], output_types: Sequence[str],
                  rebuild_all: bool=False):
         self.analyzer_id = analyzer_id
         self.identifier = identifier
 
         self.token = token
-        self.mongo = mongo
+        self.core_config = core_config
 
         self.input_formats = input_formats
         self.input_types = input_types
@@ -51,46 +54,40 @@ class AgentBase:
         # TODO consider to separate create user and create role
         self.stack.append(self._delete_user)
 
-        db = self.mongo.analysis
-
         # TODO: do not use token for password, use something urandom
+        cc = self.core_config
 
         # create custom role: only readWrite on own collection
-        db.command("createRole", self.identifier,
+        cc.temporary_db.command("createRole", self.identifier,
             privileges=[
                 {
-                    "resource": {"db": "analysis", "collection": self.identifier},
+                    "resource": {"db": cc.temporary_db.name, "collection": self.identifier},
                     "actions": ["find", "insert", "remove", "update", "createIndex"]
                 },
-                {
-                    "resource": {"db": "analysis", "collection": 'action_log'},
-                    "actions": ["find"]
-                }
             ],
             roles=[]
         )
 
         # create user
-        db.add_user(self.identifier, password=self.token,
-            roles=[{"role": self.identifier, "db": "analysis"},
-                   {"role": "read", "db": "observations"},
-                   {"role": "read", "db": "uploads"}])
+        cc.temporary_db.add_user(self.identifier, password=self.token,
+            roles=[{"role": self.identifier, "db": cc.temporary_db.name},
+                   {"role": "read", "db": cc.ptocore_db.name},
+                   {"role": "read", "db": cc.observations_db.name},
+                   {"role": "read", "db": cc.metadata_db.name}])
 
         print("user created")
 
     def _delete_user(self):
-        db = self.mongo.analysis
-
-        db.remove_user(self.identifier)
-        db.command("dropRole", self.identifier)
+        cc = self.core_config
+        cc.temporary_db.remove_user(self.identifier)
+        cc.temporary_db.command("dropRole", self.identifier)
 
         self.stack.remove(self._delete_user)
         print("user deleted")
 
     def _create_collection(self, delete_after=True):
-        db = self.mongo.analysis
-
-        db.create_collection(self.identifier)
+        cc = self.core_config
+        cc.temporary_db.create_collection(self.identifier)
 
         if delete_after:
             self.stack.append(self._delete_collection)
@@ -98,9 +95,8 @@ class AgentBase:
 
 
     def _delete_collection(self):
-        db = self.mongo.analysis
-
-        db.drop_collection(self.identifier)
+        cc = self.core_config
+        cc.temporary_db.drop_collection(self.identifier)
 
         self.stack.remove(self._delete_collection)
         print("collection deleted")
@@ -119,18 +115,37 @@ class AgentBase:
 
     def _handle_request(self, action: str, payload: dict):
         if action == 'get_info':
+            cc = self.core_config
+
+            # get the necessary things to build the mongo URIs
+            params = {
+                'user': self.identifier,
+                'pwd': self.token,
+                'host': cc.mongo.address[0],
+                'port': cc.mongo.address[1],
+                'temp_db': cc.temporary_db.name,
+                'temp_coll': self.identifier
+            }
+
+            # the URI for simply connecting to the temporary database
+            mongo_uri = 'mongodb://{user}:{pwd}@{host}:{port}/{temp_db}'.format(**params)
+
+            # the mongo URI for use with the mongo-hadoop connector
+            mongo_temporary_coll_uri = 'mongodb://{user}:{pwd}@{host}:{port}/{temp_db}.{temp_coll}'.format(**params)
+
             return {
-                'url': 'mongodb://{}:{}@localhost/analysis'.format(self.identifier, self.token),
-                'output': ('analysis', self.identifier),
-                'output_url': 'mongodb://{}:{}@localhost/analysis.{}'.format(self.identifier, self.token, self.identifier),
-                'observations': ('observations', 'observations'),
-                'metadata': ('uploads', 'uploads'),
-                'action_log': ('analysis', 'action_log'),
-                'analyzer_id': self.analyzer_id,
-                'input_formats': self.input_formats,
-                'input_types': self.input_types,
-                'output_types': self.output_types,
-                'rebuild_all': self.rebuild_all
+                'environment':          cc.environment,
+                'mongo_uri':            mongo_uri,
+                'temporary_url':        mongo_temporary_coll_uri,
+                'temporary_dbcoll':     (cc.temporary_db.name, self.identifier),
+                'observations_dbcoll':  (cc.observations_db.name, cc.observations_db.name),
+                'metadata_dbcoll':      (cc.metadata_db.name, cc.metadata_coll.name),
+                'action_log_dbcoll':    (cc.ptocore_db.name, cc.action_log.name),
+                'analyzer_id':          self.analyzer_id,
+                'input_formats':        self.input_formats,
+                'input_types':          self.input_types,
+                'output_types':         self.output_types,
+                'rebuild_all':          self.rebuild_all
             }
         elif action == 'get_spark':
             return {
@@ -178,9 +193,9 @@ class AgentBase:
         raise NotImplementedError()
 
 class OnlineAgent(AgentBase):
-    def __init__(self, identifier, token, mongo: MongoClient):
+    def __init__(self, identifier, token, core_config: CoreConfig):
 
-        super().__init__(identifier, token, mongo, identifier, [], [], [])
+        super().__init__(identifier, token, core_config, identifier, [], [], [])
 
         try:
             self._create_collection()
@@ -206,25 +221,30 @@ class OnlineAgent(AgentBase):
 
 class ModuleAgent(AgentBase):
     def __init__(self, analyzer_id,
-                 identifier, token, host, port,
+                 identifier, token,
+                 core_config: CoreConfig,
                  input_formats: Sequence[str],
                  input_types: Sequence[str],
                  output_types: Sequence[str],
                  cmdline: Sequence[str],
                  working_dir: str,
-                 rebuild_all: bool,
-                 mongo: MongoClient):
+                 rebuild_all: bool):
 
-        super().__init__(identifier, token, mongo,
-                         analyzer_id, input_formats, input_types, output_types, rebuild_all)
+        super().__init__(identifier, token, core_config, analyzer_id,
+                         input_formats, input_types, output_types, rebuild_all)
 
         self.cmdline = cmdline
         self.working_dir = working_dir
 
         # inherit current process environment (this is the default popen behavior) and add credentials
         self.env = dict(os.environ)
-        self.env['PTO_CREDENTIALS'] = json.dumps({'identifier': self.identifier, 'token': token,
-                                                  'host': host, 'port': port})
+        creds = {
+            'identifier': self.identifier,
+            'token': token,
+            'host': core_config.supervisor_host,
+            'port': core_config.supervisor_port
+        }
+        self.env['PTO_CREDENTIALS'] = json.dumps(creds)
 
         self.analyzer_stdout = []
         self.analyzer_stderr = []

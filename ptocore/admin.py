@@ -1,15 +1,21 @@
 from threading import RLock
+import os
 
 import flask
+from flask_cors import CORS
 from jsonschema import validate
 from pymongo import MongoClient
 
 from .analyzerstate import AnalyzerState
 from .repomanager import procure_repository
+from .coreconfig import CoreConfig
 
-app = flask.Flask('ptocore')
+app = flask.Flask('ptocore', static_url_path='')
+CORS(app)
 
+# TODO move to CoreConfig
 BASE_GIT_PATH = '/home/elio/analyzers'
+TEMP_GIT_PATH = '/home/elio/analyzers-temp'
 
 analyzer_create_schema = {
   "type": "object",
@@ -17,7 +23,7 @@ analyzer_create_schema = {
     "input_formats":    {"type": "array", "items": {"type": "string"}},
     "input_types":      {"type": "array", "items": {"type": "string"}},
     "output_types":     {"type": "array", "items": {"type": "string"}},
-    "command_line":     {"type": "string" },
+    "command_line":     {"type": "array", "items": {"type": "string"}},
     "repo_url":         {"type": "string" },
     "repo_commit":      {"type": "string" },
   },
@@ -33,8 +39,10 @@ analyzer_setrepo_schema = {
     "required": ["repo_url", "repo_commit"]
 }
 
+
 class AnalyzerNotDisabled(Exception):
     pass
+
 
 def get_lock():
     lock = getattr(flask.g, '_lock', None)
@@ -42,33 +50,44 @@ def get_lock():
         lock = flask.g._lock = RLock()
     return lock
 
-def get_mongo():
-    mongo = getattr(flask.g, '_mongo', None)
-    if mongo is None:
-        mongo = flask.g._mongo = MongoClient("mongodb://curator:ah8NSAdoITjT49M34VqZL3hEczCHjbcz@localhost/analysis")
-    return mongo
 
-
-def get_analyzers_coll():
-    return get_mongo().analysis.analyzers
+def get_core_config():
+    core_config = getattr(flask.g, '_core_config', None)
+    if core_config is None:
+        config_file = os.environ['PTO_CONFIG_FILE']
+        with open(config_file, 'rt') as fp:
+            core_config = flask.g._core_config = CoreConfig('admin', fp)
+    return core_config
 
 
 def get_analyzer_state():
-    return AnalyzerState('admin', get_analyzers_coll())
+    cc = get_core_config()
+    return AnalyzerState('admin', cc.analyzers_coll)
+
+
+@app.route('/static/<path:path>')
+def send_static(path):
+    cc = get_core_config()
+    return flask.send_from_directory(cc.admin_static_path, path)
 
 
 @app.route('/analyzer', methods=['GET'])
 def list_analyzers():
-    analyzers = [cursor['_id'] for cursor in get_analyzers_coll().find({}, {'_id':1})]
-    return flask.jsonify({'analyzers': analyzers})
+    cc = get_core_config()
+    cursor = cc.analyzers_coll.find({}, {'_id': 1, 'state': 1})
+
+    records = [{'analyzer_id': doc['_id'], 'state': doc['state']} for doc in cursor]
+    return flask.jsonify(records)
 
 
 @app.route('/analyzer/<analyzer_id>')
 def request_info(analyzer_id):
-    analyzer = get_analyzers_coll().find_one({'_id': analyzer_id})
+    cc = get_core_config()
+    analyzer = cc.analyzers_coll.find_one({'_id': analyzer_id})
     return flask.jsonify(analyzer)
 
-@app.route('/analyzer/<analyzer_id>', methods=['POST'])
+
+@app.route('/analyzer/<analyzer_id>/create', methods=['POST'])
 def request_create(analyzer_id):
     with get_lock():
         analyzer_state = get_analyzer_state()
@@ -80,13 +99,17 @@ def request_create(analyzer_id):
         repo_url = config['repo_url']
         repo_commit = config['repo_commit']
 
+
         # function will raise error if analyzer_id is not suitable (e.g. contains '/' etc..)
         procure_repository(BASE_GIT_PATH, analyzer_id, repo_url, repo_commit)
 
+        repo_path = os.path.join(BASE_GIT_PATH, analyzer_id)
+
         analyzer_state.create_analyzer(analyzer_id, config['input_formats'], config['input_types'],
-                                       config['output_types'], config['command_line'], '')
+                                   config['output_types'], config['command_line'], repo_path)
 
         return flask.jsonify({'success': 'created'})
+
 
 @app.route('/analyzer/<analyzer_id>/setrepo', methods=['POST'])
 def request_setrepo(analyzer_id):
@@ -136,5 +159,3 @@ def request_cancel(analyzer_id):
     with get_lock():
         analyzer_state = get_analyzer_state()
         analyzer_state.request_wish(analyzer_id, 'cancel')
-
-

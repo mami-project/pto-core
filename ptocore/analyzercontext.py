@@ -177,7 +177,21 @@ class AnalyzerContext:
 
         return self._spark_context
 
-    def spark_get_uploads(self, query):
+    def spark_uploads(self, action_id: int, timespans: Sequence[Interval], input_formats: Sequence[str] = None):
+        time_subquery = [{'meta.start_time': {'$gte': timespan[0]}, 'meta.stop_time': {'$lte': timespan[1]}}
+                         for timespan in timespans]
+
+        query = {
+            'complete': True,
+            'action_id': {'$lte': action_id},
+            'deprecated': False,
+            'meta.format': {'$in': input_formats or self.input_formats},
+            '$or': time_subquery
+        }
+
+        return self.spark_uploads_query(query)
+
+    def spark_uploads_query(self, query):
         sc = self.get_spark()
 
         if 'complete' not in query or query['complete'] is not True:

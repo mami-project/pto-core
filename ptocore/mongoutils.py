@@ -14,10 +14,22 @@ class AutoIncrementFactory:
     def delete(self, field: str):
         self.coll.delete_one({'_id': field})
 
-    def get_incrementor(self, field: str):
+    def get_incrementor(self, field: str, create_if_missing=False):
+        """
+        Returns a closure which increments the value of the given field. The increment operation is globally atomic.
+        :param field: The name of the field for which an incrementor function should be returned.
+        :param create_if_missing: Do not raise error if field is not existing. Automatically create it.
+                                  Note that checking and creating the field is not atomic.
+        :raises UnknownField: if the field does not exist.
+        :return: A closure which returns the next value and increments the field in the database atomically.
+        """
+
         # check if field exists
         if self.coll.find_one({'_id': field}) is None:
-            raise UnknownField()
+            if create_if_missing is False:
+                raise UnknownField()
+            else:
+                self.create(field)
 
         # create incrementor function and return it to the caller
         def func():

@@ -29,7 +29,7 @@ def git_cmd(repo_path: str, args: Sequence[str]) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=repo_path)
     except subprocess.CalledProcessError as e:
-        raise GitError("git reported an error.") from e
+        raise GitError("git reported an error: " + e.stdout.decode('utf-8')) from e
 
 
 def clean_repository(repo_path: str):
@@ -45,7 +45,7 @@ def procure_repository(base_path: str, analyzer_id: str, repo_url: str, repo_com
 
     if not os.path.exists(repo_path):
         # directory doesn't exist, clone it
-        git_cmd(base_path, ['git', 'clone', repo_url])
+        git_cmd(base_path, ['git', 'clone', repo_url, repo_path])
     else:
         # directory does exist, set remote url
         git_cmd(repo_path, ['git', 'remote', 'set-url', 'origin', repo_url])

@@ -1,0 +1,19 @@
+{
+  "environment": "prod",
+  "sensor": {
+    "mongo_uri": "mongodb://prod-sensor:change_me@localhost/"
+  },
+  "supervisor": {
+    "mongo_uri": "mongodb://prod-supervisor:change_me@localhost/",
+    "listen_port": 33424
+  },
+  "validator": {
+    "mongo_uri": "mongodb://prod-validator:change_me@localhost/"
+  },
+  "admin": {
+    "mongo_uri": "mongodb://prod-admin:change_me@localhost/",
+    "static_path": "path/to/pto-admin"
+  },
+
+  "metadata_coll": ["uploads", "uploads"]
+}
