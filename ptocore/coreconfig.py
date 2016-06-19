@@ -1,5 +1,6 @@
-from pymongo import MongoClient
 import json
+
+from pymongo import MongoClient
 
 class CoreConfig:
     def __init__(self, program_name: str, fp):
@@ -34,6 +35,8 @@ class CoreConfig:
         # supervisor specific
         if program_name == "supervisor":
             self.supervisor_port = doc['supervisor']['listen_port']
+            self.supervisor_spark = doc['supervisor']['spark']
+            self.supervisor_distributed = doc['supervisor']['distributed']
 
         # admin specific
         if program_name == "admin":

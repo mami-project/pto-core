@@ -95,7 +95,7 @@ class AnalyzerContext:
     to the observations database. For online analyzers this call will yield an
     'unknown request' message from the supervisor.
     """
-    def __init__(self, credentials: dict=None):
+    def __init__(self, credentials: dict=None, verbose=False):
         """
         Establish a connection to the supervisor given the credentials via constructor parameter
         or environment variables. The existence of an environment variable 'PTO_CREDENTIALS' takes
@@ -117,19 +117,23 @@ class AnalyzerContext:
         if 'error' in ans:
             raise ContextError(ans['error'])
 
-        self.mongo = MongoClient(ans['url'])
+        if verbose:
+            print("Answer from supervisor:\n"+json.dumps(ans, indent=4))
+
+        self.mongo = MongoClient(ans['mongo_uri'])
 
         # small helper function for getting the collection
         def get_coll(val):
             return self.mongo[val[0]][val[1]]
 
-        self.output = get_coll(ans['output'])
-        self.output_url = ans['output_url']
-        self.observations = get_coll(ans['observations'])
-        self.metadata = get_coll(ans['metadata'])
-        self.action_log = get_coll(ans['action_log'])
+        self.temporary_coll = get_coll(ans['temporary_dbcoll'])
+        self.temporary_uri = ans['temporary_uri']
+        self.observations_coll = get_coll(ans['observations_dbcoll'])
+        self.metadata_coll = get_coll(ans['metadata_dbcoll'])
+        self.action_log = get_coll(ans['action_log_dbcoll'])
 
         # get this analyzer's specification
+        self.environment = ans['environment']
         self.analyzer_id = ans['analyzer_id']
         self.input_formats = ans['input_formats']
         self.input_types = ans['input_types']
@@ -149,11 +153,14 @@ class AnalyzerContext:
         if 'error' in ans:
             raise ContextError(ans['error'])
 
-    def get_spark(self):
+    def get_spark(self, verbose=False):
         if self._spark_context is None:
             ans = self.supervisor.request('get_spark')
             if 'error' in ans:
                 raise ContextError(ans['error'])
+
+            if verbose:
+                print("Answer from supervisor:\n"+json.dumps(ans, indent=4))
 
             # path to spark files
             spark_path = ans['path']
@@ -181,9 +188,11 @@ class AnalyzerContext:
         time_subquery = [{'meta.start_time': {'$gte': timespan[0]}, 'meta.stop_time': {'$lte': timespan[1]}}
                          for timespan in timespans]
 
+        action_id_name = 'action_id.'+self.environment
+
         query = {
             'complete': True,
-            'action_id': {'$lte': action_id},
+            action_id_name: {'$lte': action_id},
             'deprecated': False,
             'meta.format': {'$in': input_formats or self.input_formats},
             '$or': time_subquery
@@ -197,10 +206,11 @@ class AnalyzerContext:
         if 'complete' not in query or query['complete'] is not True:
             warn("It is strongly advised to include {complete: True} in your query. See manual.")
 
-        if 'action_id' not in query:
-            warn("It is strongly advised to include action_id in your query. See manual.")
+        action_id_name = 'action_id.'+self.environment
+        if action_id_name not in query:
+            warn("It is strongly advised to include '"+action_id_name+"' in your query. See manual.")
 
-        uploads = self.metadata.find(query)
+        uploads = self.metadata_coll.find(query)
 
         seqfiles = defaultdict(list)
         for upload in uploads:

@@ -114,9 +114,8 @@ class AgentBase:
         print("Cleanup done.")
 
     def _handle_request(self, action: str, payload: dict):
+        cc = self.core_config
         if action == 'get_info':
-            cc = self.core_config
-
             # get the necessary things to build the mongo URIs
             params = {
                 'user': self.identifier,
@@ -136,7 +135,7 @@ class AgentBase:
             return {
                 'environment':          cc.environment,
                 'mongo_uri':            mongo_uri,
-                'temporary_url':        mongo_temporary_coll_uri,
+                'temporary_uri':        mongo_temporary_coll_uri,
                 'temporary_dbcoll':     (cc.temporary_db.name, self.identifier),
                 'observations_dbcoll':  (cc.observations_db.name, cc.observations_db.name),
                 'metadata_dbcoll':      (cc.metadata_db.name, cc.metadata_coll.name),
@@ -148,15 +147,9 @@ class AgentBase:
                 'rebuild_all':          self.rebuild_all
             }
         elif action == 'get_spark':
-            return {
-                'path': '/home/elio/spark-1.6.0-bin-hadoop2.6/',
-                'config': {
-                    "spark.master": "local[*]",
-                    "spark.app.name": "testapp"
-                }
-            }
+            return cc.supervisor_spark
         elif action == 'get_distributed':
-            return {'address': '127.0.0.1:8706'}
+            return cc.supervisor_distributed
         elif action == 'set_result_info':
             try:
                 max_action_id = int(payload['max_action_id'])
