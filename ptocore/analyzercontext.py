@@ -117,7 +117,8 @@ class AnalyzerContext:
         if 'error' in ans:
             raise ContextError(ans['error'])
 
-        if verbose:
+        self.verbose = verbose
+        if self.verbose:
             print("Answer from supervisor:\n"+json.dumps(ans, indent=4))
 
         self.mongo = MongoClient(ans['mongo_uri'])
@@ -147,20 +148,27 @@ class AnalyzerContext:
         self._spark_context = None
         self._distributed_executor = None
 
+        # result meta information
+        self.result_timespans = [(datetime.min, datetime.max)]
+        self.result_max_action_id = -1
+
     def set_result_info(self, max_action_id: int, timespans: Sequence[Interval]):
+        self.result_timespans = timespans
+        self.result_max_action_id = max_action_id
+
         timespans_str = [(start_date.isoformat(), end_date.isoformat()) for start_date, end_date in timespans]
         ans = self.supervisor.request('set_result_info', {'max_action_id': max_action_id, 'timespans': timespans_str})
         if 'error' in ans:
             raise ContextError(ans['error'])
 
-    def get_spark(self, verbose=False):
+    def get_spark(self):
         if self._spark_context is None:
             ans = self.supervisor.request('get_spark')
             if 'error' in ans:
                 raise ContextError(ans['error'])
 
-            if verbose:
-                print("Answer from supervisor:\n"+json.dumps(ans, indent=4))
+            if self.verbose:
+                print("get_spark answer from supervisor:\n"+json.dumps(ans, indent=4))
 
             # path to spark files
             spark_path = ans['path']
@@ -184,19 +192,32 @@ class AnalyzerContext:
 
         return self._spark_context
 
-    def spark_uploads(self, action_id: int, timespans: Sequence[Interval], input_formats: Sequence[str] = None):
+    def spark_uploads(self, input_formats: Sequence[str]):
+        """
+        Loads all uploads satisfying the condition based on self.result_max_action_id, self.result_timespans and input_formats.
+        The default values of self.result_max_action_id and self.result_timespans will include all uploads.
+        :param input_formats:
+        :return:
+        """
         time_subquery = [{'meta.start_time': {'$gte': timespan[0]}, 'meta.stop_time': {'$lte': timespan[1]}}
-                         for timespan in timespans]
-
+                         for timespan in self.result_timespans]
         action_id_name = 'action_id.'+self.environment
+
+        if self.result_max_action_id < 0:
+            action_id_condition = {'$exists': True}
+        else:
+            action_id_condition = {'$lte': self.result_max_action_id}
 
         query = {
             'complete': True,
-            action_id_name: {'$lte': action_id},
+            action_id_name: action_id_condition,
             'deprecated': False,
-            'meta.format': {'$in': input_formats or self.input_formats},
+            'meta.format': {'$in': input_formats},
             '$or': time_subquery
         }
+
+        if self.verbose:
+            print("spark_uploads query:\n"+str(query))
 
         return self.spark_uploads_query(query)
 
@@ -205,6 +226,9 @@ class AnalyzerContext:
 
         if 'complete' not in query or query['complete'] is not True:
             warn("It is strongly advised to include {complete: True} in your query. See manual.")
+
+        if 'deprecated' not in query or query['deprecated'] is not False:
+            warn("It is strongly advised to include {deprecated: False} in your query. See manual.")
 
         action_id_name = 'action_id.'+self.environment
         if action_id_name not in query:
@@ -224,7 +248,7 @@ class AnalyzerContext:
             metadata = sc.parallelize(uploads).map(lambda upload: (upload['seqKey'], upload))
 
             # sequence file is a binary key-value store. by definition the measurements are stored with seqKey as key.
-            textfiles = sc.sequenceFile(seqfile).map(lambda kv: (kv[0].decode('utf-8'), kv[1].decode('utf-8')))
+            textfiles = sc.sequenceFile(seqfile).map(lambda kv: (kv[0].decode('utf-8'), kv[1]))
 
             # this inner join does two things:
             # 1. keep only measurements we need
@@ -247,4 +271,4 @@ class AnalyzerContext:
         return self._distributed_executor
 
     def validate(self, timespans: Sequence[Interval], output_types: Sequence[str], abort_max_errors=100):
-        return validator.validate(self.analyzer_id, timespans, self.output, output_types, abort_max_errors)
+        return validator.validate(self.analyzer_id, timespans, self.temporary_coll, output_types, abort_max_errors)
