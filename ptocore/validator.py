@@ -24,7 +24,7 @@ VALIDATION_COMPARE_FIELDS = {'condition', 'time', 'path', 'value', 'sources', 'a
 
 VALIDATION_INPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'_id'}
 
-VALIDATION_OUTPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'action_id', 'valid'}
+VALIDATION_OUTPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'action_ids', 'valid'}
 
 COMPARE_PROJECTION = {'_id': 0, 'condition': 1, 'path': 1, 'analyzer_id': 1, 'sources': 1, 'value': 1}
 
@@ -35,7 +35,7 @@ def collection_ensure_order(coll: Collection):
     return coll.with_options(codec_options=codec_opts)
 
 
-def schema_validator(analyzer_id, action_id: int, timespan: Interval, outputs: Sequence[str]):
+def schema_validator(analyzer_id, action_ids: int, timespan: Interval, outputs: Sequence[str]):
     # extra validation needed for:
     # - path: is a list of strings where each string is an IP, IP-prefix, tag or AS-number.
     # - source: is a list of dicts where each dict is a valid source identifier
@@ -46,7 +46,7 @@ def schema_validator(analyzer_id, action_id: int, timespan: Interval, outputs: S
             {'analyzer_id':  {'$type': 'int', '$eq': analyzer_id}},
             {'condition':   {'$type': 'string', '$in': outputs}},
             #{'valid':  True},
-            # TODO tell schema mongodb schema validator action_id don't care if exist or not
+            # TODO tell schema mongodb schema validator action_ids don't care if exist or not
             # incomplete validation
             {'source':      {'$exists': True}},
             {'path':        {'$exists': True}},
@@ -252,7 +252,7 @@ def commit(analyzer_id: int,
     if not isinstance(action_id, int) or action_id < 0:
         return 0, [(None, "action id has to be a non-negative integer.")], action_id
 
-    temporary_coll.update_many({}, {'$set': {'action_id': action_id, 'valid': True}})
+    temporary_coll.update_many({}, {'$set': {'action_ids': [{'id': action_id, 'valid': True}]}})
 
     # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
     # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
@@ -278,10 +278,6 @@ def commit(analyzer_id: int,
 
     temporary_coll.create_index('hash')
 
-    # 1. first set all candidates to invalid and update their action_id.
-    # TODO should action_id be an array of tuple (action_id, True/False)
-    output_coll.update_many(candidates_query, {'$set': {'valid': False, 'action_id': action_id}})
-
     print("c. find candidates")
     # 2. find all observations that exist both in the output collection and in the temporary collection
     candidates = output_coll.find(candidates_query)
@@ -299,6 +295,15 @@ def commit(analyzer_id: int,
         print("blupp")
         temporary_coll.bulk_write(list(block))
 
+
+    # 1. push a new action_id to the action_ids array.
+    output_coll.update_many(candidates_query, {
+        '$push': {'action_ids': {
+            '$each': [{'id': action_id, 'valid': False}],
+            '$position': 0
+        }}
+    })
+
     print("e. insert new or validate existing observations.")
 
     # 4. commit changes into output collection.
@@ -310,7 +315,7 @@ def commit(analyzer_id: int,
         # into the output collection
         for doc in temporary_coll.find({}, {'_id': 0}):
             if 'output_id' in doc:
-                yield UpdateOne({'_id': doc['output_id']}, {'$set': {'valid': True}})
+                yield UpdateOne({'_id': doc['output_id']}, {'$set': {'action_ids.0.valid': True}})
                 kept+=1
             else:
                 yield InsertOne(doc)
