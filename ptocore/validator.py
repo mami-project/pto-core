@@ -24,7 +24,7 @@ VALIDATION_COMPARE_FIELDS = {'condition', 'time', 'path', 'value', 'sources', 'a
 
 VALIDATION_INPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'_id'}
 
-VALIDATION_OUTPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'action_id', 'deprecated'}
+VALIDATION_OUTPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'action_id', 'valid'}
 
 COMPARE_PROJECTION = {'_id': 0, 'condition': 1, 'path': 1, 'analyzer_id': 1, 'sources': 1, 'value': 1}
 
@@ -45,7 +45,7 @@ def schema_validator(analyzer_id, action_id: int, timespan: Interval, outputs: S
             # complete
             {'analyzer_id':  {'$type': 'int', '$eq': analyzer_id}},
             {'condition':   {'$type': 'string', '$in': outputs}},
-            #{'deprecated':  False},
+            #{'valid':  True},
             # TODO tell schema mongodb schema validator action_id don't care if exist or not
             # incomplete validation
             {'source':      {'$exists': True}},
@@ -252,12 +252,12 @@ def commit(analyzer_id: int,
     if not isinstance(action_id, int) or action_id < 0:
         return 0, [(None, "action id has to be a non-negative integer.")], action_id
 
-    temporary_coll.update_many({}, {'$set': {'action_id': action_id, 'deprecated': False}})
+    temporary_coll.update_many({}, {'$set': {'action_id': action_id, 'valid': True}})
 
     # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
     # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
 
-    print("b. determine deprecation candidates")
+    print("b. determine candidates to invalidate")
     def create_timespan_subquery(timespan: Interval):
         return {'$or': [
             {'time': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
@@ -267,7 +267,7 @@ def commit(analyzer_id: int,
             ]}
         ]}
 
-    # query to find deprecation candidates
+    # query to find candidates to invalidate
     candidates_query = {'analyzer_id': analyzer_id,
                         '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
@@ -278,9 +278,9 @@ def commit(analyzer_id: int,
 
     temporary_coll.create_index('hash')
 
-    # 1. first deprecate all candidates and update action_id
+    # 1. first set all candidates to invalid and update their action_id.
     # TODO should action_id be an array of tuple (action_id, True/False)
-    output_coll.update_many(candidates_query, {'$set': {'deprecated': True, 'action_id': action_id}})
+    output_coll.update_many(candidates_query, {'$set': {'valid': False, 'action_id': action_id}})
 
     print("c. find candidates")
     # 2. find all observations that exist both in the output collection and in the temporary collection
@@ -290,7 +290,7 @@ def commit(analyzer_id: int,
 
     pairs = filter(None, (find_counterpart(candidate, temporary_coll) for candidate in candidates))
 
-    # 3. mark all of them in the temporary collection
+    # 3. mark all of them in the temporary collection, they will be set to valid again
     mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'$set': {'output_id': pair[0]['_id']}}) for pair in pairs)
 
     # unfortunately bulk_write does not accept iterators. in the mongodb docs, the server limit is 1000 ops.
@@ -299,9 +299,9 @@ def commit(analyzer_id: int,
         print("blupp")
         temporary_coll.bulk_write(list(block))
 
-    print("e. insert or undeprecate observations.")
+    print("e. insert new or validate existing observations.")
 
-    # 4. commit changes into output collection
+    # 4. commit changes into output collection.
     def create_output_ops():
         kept = 0
         inserted = 0
@@ -310,7 +310,7 @@ def commit(analyzer_id: int,
         # into the output collection
         for doc in temporary_coll.find({}, {'_id': 0}):
             if 'output_id' in doc:
-                yield UpdateOne({'_id': doc['output_id']}, {'$set': {'deprecated': False}})
+                yield UpdateOne({'_id': doc['output_id']}, {'$set': {'valid': True}})
                 kept+=1
             else:
                 yield InsertOne(doc)
@@ -359,7 +359,7 @@ class Validator:
         def set_action_id_ops() -> Sequence[Tuple[UpdateOne, InsertOne]]:
             find_query = {
                 'complete': True,
-                'deprecated': False,
+                'valid': True,
                 action_id_field: {'$exists': False},
                 'meta.format': {'$exists': True},
                 'meta.start_time': {'$exists': True},

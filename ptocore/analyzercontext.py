@@ -211,7 +211,7 @@ class AnalyzerContext:
         query = {
             'complete': True,
             action_id_name: action_id_condition,
-            'deprecated': False,
+            'valid': True,
             'meta.format': {'$in': input_formats},
             '$or': time_subquery
         }
@@ -227,8 +227,8 @@ class AnalyzerContext:
         if 'complete' not in query or query['complete'] is not True:
             warn("It is strongly advised to include {complete: True} in your query. See manual.")
 
-        if 'deprecated' not in query or query['deprecated'] is not False:
-            warn("It is strongly advised to include {deprecated: False} in your query. See manual.")
+        if 'valid' not in query or query['valid'] is not True:
+            warn("It is strongly advised to include {valid: True} in your query. See manual.")
 
         action_id_name = 'action_id.'+self.environment
         if action_id_name not in query:
