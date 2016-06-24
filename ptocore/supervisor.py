@@ -8,6 +8,7 @@ import os
 from functools import partial
 from pymongo.database import Database
 from pymongo.collection import Collection
+import dpath.util
 
 from .agent import OnlineAgent, ModuleAgent
 from .analyzerstate import AnalyzerState
@@ -44,6 +45,9 @@ class Supervisor:
 
         self.core_config = core_config
 
+        # delete all users starting with `module-` or `online-` in their name
+        self.delete_temp_users()
+
         # the supervisor is the only component generating agent_ids, therefore create_if_missing=True is not a problem.
         idfactory = AutoIncrementFactory(self.core_config.idfactory_coll)
         self._agent_id_creator = idfactory.get_incrementor('agent_id', create_if_missing=True)
@@ -54,12 +58,29 @@ class Supervisor:
 
         self.server = None
 
-        # todo delete users and collections
-
         server_coro = self.loop.create_server(lambda: SupervisorServer(self),
                                               host='localhost',
                                               port=self.core_config.supervisor_port)
         self.server = self.loop.run_until_complete(server_coro)
+
+    def delete_temp_users(self):
+        # delete existing users and roles attached to this supervisor
+        temp_db = self.core_config.temporary_db
+
+        userdicts = temp_db.command({ "usersInfo": 1})
+        userdbnames = dpath.util.values(userdicts, 'users/*/_id')
+
+        # userdbnames is a list of <database>.<username>
+        # now split <database>. away.
+        usernames = [userdbname.split('.', 1)[1] for userdbname in userdbnames]
+
+        # only care about `online-` and `module-` users
+        usernames = [un for un in usernames if un.startswith('online_') or un.startswith('module_')]
+
+        for username in usernames:
+            print("dropping", username)
+            temp_db.remove_user(username)
+            temp_db.command("dropRole", username)
 
     def analyzer_request(self, identifier, token, action, payload):
         try:
@@ -127,7 +148,7 @@ class Supervisor:
                 print("supervisor: cancelled {} upon request".format(analyzer['_id']))
                 continue
 
-            print("planned", analyzer)
+            print("executing", analyzer['_id'])
 
             # create agent
             identifier = 'module_'+str(self._agent_id_creator())
