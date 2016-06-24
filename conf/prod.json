@@ -5,7 +5,8 @@
   },
   "supervisor": {
     "mongo_uri": "mongodb://prod-supervisor:change_me@localhost/",
-    "listen_port": 33424
+    "listen_port": 33424,
+    "ensure_clean_repo": true
   },
   "validator": {
     "mongo_uri": "mongodb://prod-validator:change_me@localhost/"

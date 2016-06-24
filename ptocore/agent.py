@@ -221,7 +221,8 @@ class ModuleAgent(AgentBase):
                  output_types: Sequence[str],
                  cmdline: Sequence[str],
                  working_dir: str,
-                 rebuild_all: bool):
+                 rebuild_all: bool,
+                 ensure_clean_repo: bool):
 
         super().__init__(identifier, token, core_config, analyzer_id,
                          input_formats, input_types, output_types, rebuild_all)
@@ -243,7 +244,8 @@ class ModuleAgent(AgentBase):
         self.analyzer_stderr = []
 
         try:
-            clean_repository(working_dir)
+            if ensure_clean_repo:
+                clean_repository(working_dir)
             self._create_collection(delete_after=False)
             self._create_user()
         except:

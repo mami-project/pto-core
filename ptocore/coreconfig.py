@@ -42,6 +42,7 @@ class CoreConfig:
             self.supervisor_port = doc['supervisor']['listen_port']
             self.supervisor_spark = doc['supervisor']['spark']
             self.supervisor_distributed = doc['supervisor']['distributed']
+            self.supervisor_ensure_clean_repo = doc['supervisor']['ensure_clean_repo']
 
         # admin specific
         if program_name == "admin":

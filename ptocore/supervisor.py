@@ -135,7 +135,8 @@ class Supervisor:
 
             agent = ModuleAgent(analyzer['_id'], identifier, token, self.core_config,
                                 analyzer['input_formats'], analyzer['input_types'], analyzer['output_types'],
-                                analyzer['command_line'], analyzer['working_dir'], analyzer['rebuild_all'])
+                                analyzer['command_line'], analyzer['working_dir'], analyzer['rebuild_all'],
+                                self.core_config.supervisor_ensure_clean_repo)
 
             self.agents[agent.identifier] = agent
 
