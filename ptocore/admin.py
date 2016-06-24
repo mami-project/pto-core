@@ -10,12 +10,8 @@ from .analyzerstate import AnalyzerState
 from .repomanager import procure_repository
 from .coreconfig import CoreConfig
 
-app = flask.Flask('ptocore', static_url_path='')
+app = flask.Flask('ptocore')
 CORS(app)
-
-# TODO move to CoreConfig
-BASE_GIT_PATH = '/home/elio/analyzers'
-TEMP_GIT_PATH = '/home/elio/analyzers-temp'
 
 analyzer_create_schema = {
   "type": "object",
@@ -90,6 +86,7 @@ def request_info(analyzer_id):
 @app.route('/analyzer/<analyzer_id>/create', methods=['POST'])
 def request_create(analyzer_id):
     with get_lock():
+        cc = get_core_config()
         analyzer_state = get_analyzer_state()
 
         config = flask.request.get_json()
@@ -101,9 +98,9 @@ def request_create(analyzer_id):
 
 
         # function will raise error if analyzer_id is not suitable (e.g. contains '/' etc..)
-        procure_repository(BASE_GIT_PATH, analyzer_id, repo_url, repo_commit)
+        procure_repository(cc.admin_base_repo_path, analyzer_id, repo_url, repo_commit)
 
-        repo_path = os.path.join(BASE_GIT_PATH, analyzer_id)
+        repo_path = os.path.join(cc.admin_base_repo_path, analyzer_id)
 
         analyzer_state.create_analyzer(analyzer_id, config['input_formats'], config['input_types'],
                                    config['output_types'], config['command_line'], repo_path)
@@ -114,6 +111,7 @@ def request_create(analyzer_id):
 @app.route('/analyzer/<analyzer_id>/setrepo', methods=['POST'])
 def request_setrepo(analyzer_id):
     with get_lock():
+        cc = get_core_config()
         config = flask.request.get_json()
         validate(config, analyzer_setrepo_schema)
 
@@ -124,7 +122,7 @@ def request_setrepo(analyzer_id):
         repo_url = config['repo_url']
         repo_commit = config['repo_commit']
 
-        procure_repository(BASE_GIT_PATH, analyzer_id, repo_url, repo_commit)
+        procure_repository(cc.admin_base_repo_path, analyzer_id, repo_url, repo_commit)
 
         return flask.jsonify({'success': 'repo updated'})
 
@@ -140,22 +138,31 @@ def request_disable(analyzer_id):
         if analyzer_state.check_wish(analyzer_state[analyzer_id], 'disable'):
             print("admin: disabled {} upon request".format(analyzer_id))
 
-        return flask.jsonify({'success': 'requested deactivation for \'{}\''.format(analyzer_id)})
+        return flask.jsonify({'success': 'requested disable for \'{}\''.format(analyzer_id)})
 
 
 @app.route('/analyzer/<analyzer_id>/enable', methods=['PUT'])
 def request_enable(analyzer_id):
     with get_lock():
         analyzer_state = get_analyzer_state()
-
+        print(analyzer_state, analyzer_id)
         analyzer = analyzer_state[analyzer_id]
+
+        print(analyzer)
 
         if analyzer['state'] in ['error', 'disabled']:
             analyzer_state.transition(analyzer_id, analyzer['state'], 'sensing')
-
+            return flask.jsonify({'success': 'enabled \'{}\''.format(analyzer_id)})
+        else:
+            return flask.jsonify({'success': 'analyzer \'{}\ is in state \'{}\''.format(analyzer_id, analyzer['state'])})
 
 @app.route('/analyzer/<analyzer_id>/cancel', methods=['PUT'])
 def request_cancel(analyzer_id):
     with get_lock():
         analyzer_state = get_analyzer_state()
         analyzer_state.request_wish(analyzer_id, 'cancel')
+
+        if analyzer_state.check_wish(analyzer_state[analyzer_id], 'cancel'):
+            print("admin: cancelled {} upon request".format(analyzer_id))
+
+        return flask.jsonify({'success': 'requested cancel for \'{}\''.format(analyzer_id)})

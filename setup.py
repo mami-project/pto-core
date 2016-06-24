@@ -32,8 +32,14 @@ setup(
 
     packages=find_packages(exclude=['contrib', 'docs', 'tests*']),
 
-    install_requires=['python-dateutil', 'pymongo', 'flask', 'jsonschema'],
+    install_requires=['python-dateutil', 'pymongo', 'flask', 'flask_cors', 'jsonschema'],
 
     entry_points={
+        'console_scripts': [
+            'ptocore-sensor = ptocore.sensor:main',
+            'ptocore-supervisor = ptocore.supervisor:main',
+            'ptocore-validator = ptocore.validator:main',
+            'ptocore-admin = runadmin:main'
+        ]
     },
 )

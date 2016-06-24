@@ -40,6 +40,6 @@ class CoreConfig:
 
         # admin specific
         if program_name == "admin":
-            self.admin_host = doc['admin'].get('listen_host', 'localhost')
-            self.admin_port = doc['admin'].get('listen_port', 5000)
             self.admin_static_path = doc['admin']['static_path']
+            self.admin_base_repo_path = doc['admin']['base_repo_path']
+            self.admin_temp_repo_path = doc['admin']['temp_repo_path']

@@ -23,9 +23,9 @@
   },
   "admin": {
     "mongo_uri": "mongodb://prod-admin:change_me@localhost/",
-    "static_path": "path/to/pto-admin",
-    "listen_host": "0.0.0.0",
-    "listen_port": 5000
+    "base_repo_path": "/path/to/repositories",
+    "temp_repo_path": "/path/to/temporary",
+    "static_path": "path/to/pto-admin"
   },
 
   "metadata_coll": ["uploads", "uploads"]

@@ -24,8 +24,8 @@ class TransitionFailed(AnalyzerStateError):
 
 transition_domains = {
     'admin': {
-        'error':        {'disabled'},
-        'disabled':     {'error', 'sensing'},
+        'error':        {'disabled', 'sensing'},
+        'disabled':     {'error', 'sensing', 'planned'},
     },
     'sensor': {
         'sensing':      {'error', 'disabled', 'planned'}
@@ -54,7 +54,10 @@ class AnalyzerState:
         self.analyzers_coll = analyzers_coll
 
     def is_allowed(self, prev_state, next_state):
-        return next_state in transition_domains[self.domain][prev_state]
+        try:
+            return next_state in transition_domains[self.domain][prev_state]
+        except KeyError as e:
+            return False
 
     @staticmethod
     def state_to_domain(state):
@@ -66,8 +69,8 @@ class AnalyzerState:
     def __getitem__(self, analyzer_id):
         return self.analyzers_coll.find_one({'_id': analyzer_id})
 
-    def is_in_my_domain(self, analyzer: dict):
-        return self.state_to_domain(analyzer['state']) != self.domain
+    def in_my_domain(self, analyzer: dict):
+        return self.state_to_domain(analyzer['state']) == self.domain
 
     def running_analyzers(self):
         return self.analyzers_coll.find({'state': {'$in': running_states}})
@@ -146,7 +149,7 @@ class AnalyzerState:
         if doc is None:
             raise TransitionFailed("analyzer '{}' not known".format(analyzer_id))
 
-        if self.is_in_my_domain(doc):
+        if self.in_my_domain(doc) is False:
             raise TransitionFailed('cannot transition to error, '
                                    'because state \'{}\' is not in our domain'.format(doc['state']))
 
@@ -159,13 +162,17 @@ class AnalyzerState:
 
     def check_wish(self, analyzer, granting_wish):
         # check if analyzer is in our domain and if we want to fulfil the wish if any
-        if self.is_in_my_domain(analyzer) and granting_wish == analyzer['wish']:
+        if self.in_my_domain(analyzer) and granting_wish == analyzer['wish']:
             if granting_wish == 'disable':
                 self.transition(analyzer['_id'], analyzer['state'], 'disabled')
             elif granting_wish == 'cancel':
                 self.transition_to_error(analyzer['_id'], 'cancelled')
             else:
                 raise AnalyzerStateError("granting_wish '{}' is not supported".format(granting_wish))
+
+            self.analyzers_coll.find_one_and_update(
+                {'_id': analyzer['_id']}, {'$set': {'wish': None}}
+            )
 
             return True
         else:
