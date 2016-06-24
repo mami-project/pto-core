@@ -235,7 +235,7 @@ class ModuleAgent(AgentBase):
         creds = {
             'identifier': self.identifier,
             'token': token,
-            'host': core_config.supervisor_host,
+            'host': 'localhost',
             'port': core_config.supervisor_port
         }
         self.env['PTO_CREDENTIALS'] = json.dumps(creds)
