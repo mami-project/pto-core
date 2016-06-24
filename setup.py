@@ -32,7 +32,7 @@ setup(
 
     packages=find_packages(exclude=['contrib', 'docs', 'tests*']),
 
-    install_requires=['python-dateutil', 'pymongo', 'flask', 'flask_cors', 'jsonschema'],
+    install_requires=['python-dateutil', 'pymongo', 'flask', 'flask_cors', 'jsonschema', 'dpath'],
 
     entry_points={
         'console_scripts': [

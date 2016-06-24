@@ -1,0 +1,20 @@
+{
+  "supervisor": {
+    "spark": {
+      "path": "/path/to/spark-XX-bin-hadoopYY/",
+      "config": {
+        "spark.master": "local[*]",
+        "spark.driver.memory": "4g",
+        "spark.executor.memory": "4g"
+      }
+    },
+    "distributed": {
+      "address": "127.0.0.1:8706"
+    }
+  },
+  "admin": {
+    "static_path": "/path/to/pto-admin"
+  },
+
+  "metadata_coll": ["uploads", "uploads"]
+}

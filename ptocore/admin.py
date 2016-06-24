@@ -1,5 +1,6 @@
 from threading import RLock
 import os
+from contextlib import ExitStack
 
 import flask
 from flask_cors import CORS
@@ -50,9 +51,11 @@ def get_lock():
 def get_core_config():
     core_config = getattr(flask.g, '_core_config', None)
     if core_config is None:
-        config_file = os.environ['PTO_CONFIG_FILE']
-        with open(config_file, 'rt') as fp:
-            core_config = flask.g._core_config = CoreConfig('admin', fp)
+        with ExitStack() as stack:
+            filenames = os.environ['PTO_CONFIG_FILES'].split(':')
+            fps = [stack.enter_context(open(filename)) for filename in filenames]
+            core_config = flask.g._core_config = CoreConfig('admin', fps)
+
     return core_config
 
 

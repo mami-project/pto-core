@@ -5,18 +5,7 @@
   },
   "supervisor": {
     "mongo_uri": "mongodb://prod-supervisor:change_me@localhost/",
-    "listen_port": 33424,
-    "spark": {
-      "path": "/path/to/spark-XX-bin-hadoopYY/",
-      "config": {
-        "spark.master": "local[*]",
-        "spark.driver.memory": "4g",
-        "spark.executor.memory": "4g"
-      }
-    },
-    "distributed": {
-      "address": "127.0.0.1:8706"
-    }
+    "listen_port": 33424
   },
   "validator": {
     "mongo_uri": "mongodb://prod-validator:change_me@localhost/"
@@ -24,9 +13,6 @@
   "admin": {
     "mongo_uri": "mongodb://prod-admin:change_me@localhost/",
     "base_repo_path": "/path/to/repositories",
-    "temp_repo_path": "/path/to/temporary",
-    "static_path": "path/to/pto-admin"
-  },
-
-  "metadata_coll": ["uploads", "uploads"]
+    "temp_repo_path": "/path/to/temporary"
+  }
 }

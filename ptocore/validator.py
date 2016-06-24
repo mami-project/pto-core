@@ -437,10 +437,10 @@ class Validator:
 def main():
     desc = 'Monitor the observatory for changes and order execution of analyzer modules.'
     parser = argparse.ArgumentParser(description=desc)
-    parser.add_argument('config_file', type=argparse.FileType('rt'))
+    parser.add_argument('CONFIG_FILES', type=argparse.FileType('rt'), nargs='*')
     args = parser.parse_args()
 
-    cc = CoreConfig('validator', args.config_file)
+    cc = CoreConfig('validator', args.CONFIG_FILES)
 
     val = Validator(cc)
 

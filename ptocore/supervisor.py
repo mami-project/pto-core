@@ -156,10 +156,10 @@ class Supervisor:
 def main():
     desc = 'Manage execution of analyzer modules.'
     parser = argparse.ArgumentParser(description=desc)
-    parser.add_argument('config_file', type=argparse.FileType('rt'))
+    parser.add_argument('CONFIG_FILES', type=argparse.FileType('rt'), nargs='*')
     args = parser.parse_args()
 
-    cc = CoreConfig('supervisor', args.config_file)
+    cc = CoreConfig('supervisor', args.CONFIG_FILES)
 
     loop = asyncio.get_event_loop()
 

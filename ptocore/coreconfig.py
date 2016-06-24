@@ -1,11 +1,16 @@
 import json
 
 from pymongo import MongoClient
+import dpath.util
+
 
 class CoreConfig:
-    def __init__(self, program_name: str, fp):
+    def __init__(self, program_name: str, fps):
         assert(program_name in ['sensor', 'supervisor', 'validator', 'admin'])
-        doc = json.load(fp)
+        doc = {}
+        for fp in fps:
+            doc_load = json.load(fp)
+            dpath.util.merge(doc, doc_load)
 
         self.mongo = MongoClient(doc[program_name]['mongo_uri'])
 
