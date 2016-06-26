@@ -12,6 +12,11 @@ class CoreConfig:
             doc_load = json.load(fp)
             dpath.util.merge(doc, doc_load)
 
+        # set write and read concern according to the MongoDB 3.2 docs:
+        # > To ensure that a single thread can read its own writes, use "majority" read concern and
+        # > "majority" write concern against the primary of the replica set.
+        # TODO change this when server is started with `--enableMajorityReadConcern`
+        #self.mongo = MongoClient(doc[program_name]['mongo_uri'], w="majority", readConcernLevel="majority")
         self.mongo = MongoClient(doc[program_name]['mongo_uri'])
 
         self.environment = doc['environment']
