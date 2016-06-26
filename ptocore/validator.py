@@ -271,6 +271,8 @@ def commit(analyzer_id: int,
     candidates_query = {'analyzer_id': analyzer_id,
                         '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
+    print("candidates_query=", candidates_query)
+
     # create hashes
     for obs_group in grouper(temporary_coll.find(), 1000):
         bulk = [UpdateOne({'_id': obs['_id']}, {'$set': {'hash': create_hash(obs)}}) for obs in obs_group]
@@ -290,19 +292,25 @@ def commit(analyzer_id: int,
     mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'$set': {'output_id': pair[0]['_id']}}) for pair in pairs)
 
     # unfortunately bulk_write does not accept iterators. in the mongodb docs, the server limit is 1000 ops.
-    print("blapp")
     for block in grouper(mark_ops, 1000):
-        print("blupp")
+        print(".")
         temporary_coll.bulk_write(list(block))
 
+    # push a new action_id and valid: False to all candidates that were valid before.
+    # later in the code this item is removed iff the candidate is still valid.
+    candidates_query_valid = candidates_query.copy()
+    candidates_query_valid.update({
+        'action_ids.0.valid': True
+    })
 
-    # 1. push a new action_id to the action_ids array.
-    output_coll.update_many(candidates_query, {
+    num_marked_false = output_coll.update_many(candidates_query_valid, {
         '$push': {'action_ids': {
             '$each': [{'id': action_id, 'valid': False}],
             '$position': 0
         }}
-    })
+    }).modified_count
+
+    print("marked false: {}".format(num_marked_false))
 
     print("e. insert new or validate existing observations.")
 
@@ -315,13 +323,24 @@ def commit(analyzer_id: int,
         # into the output collection
         for doc in temporary_coll.find({}, {'_id': 0}):
             if 'output_id' in doc:
-                yield UpdateOne({'_id': doc['output_id']}, {'$set': {'action_ids.0.valid': True}})
+                # if observation was valid before, pop the current item because validation status hasn't changed
+                yield UpdateOne({'_id': doc['output_id'], 'action_ids.0.id': action_id, 'action_ids.1.valid': True},
+                                {'$pop': {'action_ids': -1}})
+
+                # if observation was invalid before, push a valid item
+                yield UpdateOne({'_id': doc['output_id'], 'action_ids.0.valid': False},
+                                {'$push': {
+                                    'action_ids': {'$each': [{'id': action_id, 'valid': True}], '$position': 0}
+                                }})
+
                 kept+=1
             else:
                 yield InsertOne(doc)
                 inserted+=1
 
-        print("commit stats: {} kept, {} inserted".format(kept, inserted))
+        deprecated = max(num_marked_false - kept, 0)
+
+        print("commit stats: deprecated(+)/undeprecated(-): {}, kept {}, added: {}".format(deprecated, kept, inserted))
 
     # action log
     action_log.insert_one({
@@ -337,6 +356,7 @@ def commit(analyzer_id: int,
     print("perform critical write")
     for block in grouper(create_output_ops(), 1000):
         output_coll.bulk_write(list(block))
+
 
     print("f. done. drop temporary collection")
     # 5. finally delete collection
