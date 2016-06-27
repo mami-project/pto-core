@@ -39,7 +39,7 @@ setup(
             'ptocore-sensor = ptocore.sensor:main',
             'ptocore-supervisor = ptocore.supervisor:main',
             'ptocore-validator = ptocore.validator:main',
-            'ptocore-admin = runadmin:main'
+            'ptocore-createconfig = ptocore.createconfig:main'
         ]
     },
 )
