@@ -197,11 +197,12 @@ class AnalyzerContext:
         Loads all uploads satisfying the condition based on self.result_max_action_id, self.result_timespans and input_formats.
         The default values of self.result_max_action_id and self.result_timespans will include all uploads.
         :param input_formats:
-        :return:
+        :return: A pyspark RDD of the format [filename: str, [metadata: dict, data: bytes]]
         """
         time_subquery = [{'meta.start_time': {'$gte': timespan[0]}, 'meta.stop_time': {'$lte': timespan[1]}}
                          for timespan in self.result_timespans]
         action_id_name = 'action_id.'+self.environment
+        valid_name = 'valid.'+self.environment
 
         if self.result_max_action_id < 0:
             action_id_condition = {'$exists': True}
@@ -211,7 +212,7 @@ class AnalyzerContext:
         query = {
             'complete': True,
             action_id_name: action_id_condition,
-            'valid': True,
+            valid_name: True,
             'meta.format': {'$in': input_formats},
             '$or': time_subquery
         }
@@ -227,8 +228,9 @@ class AnalyzerContext:
         if 'complete' not in query or query['complete'] is not True:
             warn("It is strongly advised to include {complete: True} in your query. See manual.")
 
-        if 'valid' not in query or query['valid'] is not True:
-            warn("It is strongly advised to include {valid: True} in your query. See manual.")
+        valid_name = 'valid.'+self.environment
+        if valid_name not in query or query[valid_name] is not True:
+            warn("It is strongly advised to include {"+valid_name+": True} in your query. See manual.")
 
         action_id_name = 'action_id.'+self.environment
         if action_id_name not in query:

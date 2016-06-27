@@ -9,7 +9,8 @@
     "ensure_clean_repo": true
   },
   "validator": {
-    "mongo_uri": "mongodb://prod-validator:change_me@localhost/"
+    "mongo_uri": "mongodb://prod-validator:change_me@localhost/",
+    "upload_filter": null
   },
   "admin": {
     "mongo_uri": "mongodb://prod-admin:change_me@localhost/",

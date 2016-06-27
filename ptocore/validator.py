@@ -5,8 +5,9 @@ from hashlib import sha1
 import argparse
 
 import re
-from bson import CodecOptions
+from bson import CodecOptions, ObjectId
 from collections import OrderedDict
+import pymongo
 from pymongo.errors import BulkWriteError
 from pymongo.collection import Collection
 from pymongo.operations import UpdateOne, InsertOne
@@ -366,36 +367,83 @@ def commit(analyzer_id: int,
 
 class Validator:
     def __init__(self, core_config: CoreConfig):
-        self.core_config = core_config
+        self.cc = core_config
         self.analyzer_state = AnalyzerState('validator', core_config.analyzers_coll)
+
+        self.action_id_name = 'action_id.'+self.cc.environment
+        self.valid_name = 'valid.'+self.cc.environment
 
         # the validator is the only component generating action_ids, therefore create_if_missing=True is not a problem.
         idfactory = AutoIncrementFactory(core_config.idfactory_coll)
         self._action_id_creator = idfactory.get_incrementor('action_id', create_if_missing=True)
+
+    def validate_upload(self, upload_id: ObjectId, valid: bool):
+        action_doc = self.cc.action_log.find_one({'upload_id': upload_id, 'action': 'upload'})
+        if action_doc is None:
+            print("upload doesn't exist in action_log")
+            return
+
+        upload_doc = self.cc.metadata_coll.find_one({'_id': upload_id, self.action_id_name: {'$exists': True}})
+        if upload_doc is None:
+            print("upload doesn't exist in upload database or upload has no field called '"+self.action_id_name+"'")
+            return
+
+        if not isinstance(upload_id, ObjectId):
+            print("argument upload_id is not of type ObjectId.")
+
+        if not isinstance(valid, bool):
+            print("argument valid is not of type bool.")
+
+        timespans = action_doc['timespans']
+        output_formats = action_doc['output_formats']
+
+        action = "marked_valid" if valid else "marked_invalid"
+
+        action_id = self._action_id_creator()
+        self.cc.metadata_coll.update_one({'_id': upload_id}, {'$set': {self.valid_name: valid}})
+        self.cc.action_log.insert_one({ "_id" : action_id, "timespans" : timespans, "upload_id" : upload_id,
+                              "action" : action, "output_formats" : output_formats })
+
+    def check_for_requests(self):
+        """
+        Check for requests to change valid state of an upload.
+        """
+        while True:
+            doc = self.cc.requests_coll.find_one_and_delete(
+                {'receiver': 'validator'}, sort=[('_id', pymongo.ASCENDING)]
+            )
+            if doc is None:
+                break
+
+            if doc['action'] == 'validate_upload':
+                print("fulfil request: set valid: {} for upload_id {}".format(doc['valid'], doc['upload_id']))
+                self.validate_upload(doc['upload_id'], doc['valid'])
 
     def check_for_uploads(self):
         """
         Assign action_id to every completed upload
         """
 
-        cc = self.core_config
-
-        action_id_field = 'action_id.'+cc.environment
         def set_action_id_ops() -> Sequence[Tuple[UpdateOne, InsertOne]]:
             find_query = {
                 'complete': True,
-                'valid': True,
-                action_id_field: {'$exists': False},
+                self.action_id_name: {'$exists': False},
                 'meta.format': {'$exists': True},
                 'meta.start_time': {'$exists': True},
                 'meta.stop_time': {'$exists': True}
             }
 
-            cursor = cc.metadata_coll.find(find_query).sort('timestamp')
+            # apply filter from environment config
+            if isinstance(self.cc.validator_upload_filter, dict):
+                find_query.update(self.cc.validator_upload_filter)
+
+            cursor = self.cc.metadata_coll.find(find_query).sort('timestamp')
             for upload in cursor:
                 action_id = self._action_id_creator()
                 print("assign action id {} to upload {}".format(action_id, upload['_id']))
-                uploads_query = UpdateOne({'_id': upload['_id']}, {'$set': {action_id_field: action_id}})
+                uploads_query = UpdateOne({'_id': upload['_id']},
+                                          {'$set': {self.action_id_name: action_id,
+                                                    self.valid_name: True}})
 
                 timespans = [(upload['meta']['start_time'], upload['meta']['stop_time'])]
 
@@ -411,8 +459,8 @@ class Validator:
 
         try:
             for uploads_block, action_log_block in grouper_transpose(set_action_id_ops(), 1000):
-                cc.metadata_coll.bulk_write(uploads_block)
-                cc.action_log.bulk_write(action_log_block)
+                self.cc.metadata_coll.bulk_write(uploads_block)
+                self.cc.action_log.bulk_write(action_log_block)
         except BulkWriteError as e:
             # most likely a configuration error
             print(e.details)
@@ -420,7 +468,6 @@ class Validator:
 
 
     def check_for_analyzers(self):
-        cc = self.core_config
         executed = self.analyzer_state.executed_analyzers()
         for analyzer in executed:
             # check for wish
@@ -433,10 +480,10 @@ class Validator:
             self.analyzer_state.transition(analyzer['_id'], 'executed', 'validating')
 
             exe_res = analyzer['execution_result']
-            temporary_coll = cc.temporary_db[exe_res['temporary_coll']]
+            temporary_coll = self.cc.temporary_db[exe_res['temporary_coll']]
             valid_count, errors, action_id = commit(analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
-                                                    exe_res['timespans'], temporary_coll, cc.observations_coll,
-                                                    analyzer['output_types'], cc.action_log)
+                                                    exe_res['timespans'], temporary_coll, self.cc.observations_coll,
+                                                    analyzer['output_types'], self.cc.action_log)
 
             if len(errors) > 0:
                 print("analyzer {} with action id {} has at least {} valid records but {} have problems:".format(analyzer['_id'], action_id, valid_count, len(errors)))
@@ -452,6 +499,7 @@ class Validator:
         print("validator: check for work")
         self.check_for_analyzers()
         self.check_for_uploads()
+        self.check_for_requests()
 
 
 def main():

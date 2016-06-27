@@ -35,6 +35,7 @@ class CoreConfig:
         # get collections
         self.analyzers_coll = self.ptocore_db.analyzers
         self.action_log = self.ptocore_db.action_log
+        self.requests_coll = self.ptocore_db.requests
         self.observations_coll = self.observations_db.observations
         self.idfactory_coll = self.ptocore_db.idfactory
 
@@ -54,3 +55,7 @@ class CoreConfig:
             self.admin_static_path = doc['admin']['static_path']
             self.admin_base_repo_path = doc['admin']['base_repo_path']
             self.admin_temp_repo_path = doc['admin']['temp_repo_path']
+
+        # validator specific
+        if program_name == "validator":
+            self.validator_upload_filter = doc['validator']['upload_filter']
