@@ -35,7 +35,7 @@ class Sensor:
                 continue
 
             unstable_types = self.analyzer_state.unstable_types()
-            print("unstable_types:", blocked_types)
+            print("unstable_types:", unstable_types)
             if any(input_type in unstable_types for input_type in analyzer['input_types']):
                 # TODO set 'stalled_reason' = "input unstable" in analyzers_coll
                 continue
