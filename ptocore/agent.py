@@ -9,6 +9,7 @@ import traceback
 import json
 import os
 import subprocess
+import logging
 
 import dateutil.parser
 
@@ -25,12 +26,17 @@ class AgentError(Exception):
 class AnalyzerError(Exception):
     pass
 
+class AgentLoggerAdapter(logging.LoggerAdapter):
+    def process(self, msg, kwargs):
+        return '[%s] %s' % (self.extra['analyzer_id'], msg), kwargs
 
 class AgentBase:
     # TODO: check mongo return values & exceptions
     def __init__(self, identifier, token, core_config: CoreConfig, analyzer_id: str,
                  input_formats: Sequence[str], input_types: Sequence[str], output_types: Sequence[str],
                  rebuild_all: bool=False):
+
+        self.logger = AgentLoggerAdapter(logging.getLogger("ptocore.supervisor.agent"), {'analyzer_id': analyzer_id})
         self.analyzer_id = analyzer_id
         self.identifier = identifier
 
@@ -51,10 +57,8 @@ class AgentBase:
         self.stack = []
 
     def _create_user(self):
-        # TODO consider to separate create user and create role
         self.stack.append(self._delete_user)
 
-        # TODO: do not use token for password, use something urandom
         cc = self.core_config
 
         # create custom role: only readWrite on own collection
@@ -75,7 +79,7 @@ class AgentBase:
                    {"role": "read", "db": cc.observations_db.name},
                    {"role": "read", "db": cc.metadata_db.name}])
 
-        print("user created")
+        self.logger.info("user created")
 
     def _delete_user(self):
         cc = self.core_config
@@ -83,7 +87,7 @@ class AgentBase:
         cc.temporary_db.command("dropRole", self.identifier)
 
         self.stack.remove(self._delete_user)
-        print("user deleted")
+        self.logger.info("user deleted")
 
     def _create_collection(self, delete_after=True):
         cc = self.core_config
@@ -91,7 +95,7 @@ class AgentBase:
 
         if delete_after:
             self.stack.append(self._delete_collection)
-        print("collection created")
+        self.logger.info("collection created")
 
 
     def _delete_collection(self):
@@ -99,22 +103,20 @@ class AgentBase:
         cc.temporary_db.drop_collection(self.identifier)
 
         self.stack.remove(self._delete_collection)
-        print("collection deleted")
+        self.logger.info("collection deleted")
 
     def _cleanup(self):
         for func in reversed(self.stack):
             try:
                 func()
             except:
-                # TODO: log problem and continue cleanup
-                print("Error during cleanup:")
-                traceback.print_exc()
-                print("Continuing cleanup..")
+                self.logger.exception("error during cleanup (continuing anyway):", stack_info=True)
 
-        print("Cleanup done.")
+        self.logger.info("cleanup done.")
 
     def _handle_request(self, action: str, payload: dict):
         cc = self.core_config
+        self.logger.info("requested '{}' with payload '{}'.".format(action, payload))
         if action == 'get_info':
             # get the necessary things to build the mongo URIs
             params = {
@@ -132,6 +134,7 @@ class AgentBase:
             # the mongo URI for use with the mongo-hadoop connector
             mongo_temporary_coll_uri = 'mongodb://{user}:{pwd}@{host}:{port}/{temp_db}.{temp_coll}'.format(**params)
 
+            self.logger.debug("returned execution info.")
             return {
                 'environment':          cc.environment,
                 'mongo_uri':            mongo_uri,
@@ -147,8 +150,10 @@ class AgentBase:
                 'rebuild_all':          self.rebuild_all
             }
         elif action == 'get_spark':
+            self.logger.debug("returned spark config.")
             return cc.supervisor_spark
         elif action == 'get_distributed':
+            self.logger.debug("returned distributed config.")
             return cc.supervisor_distributed
         elif action == 'set_result_info':
             try:
@@ -156,29 +161,38 @@ class AgentBase:
                 timespans_str = payload['timespans']
 
                 if max_action_id < 0:
-                    return {'error': 'max_action_id < 0 not allowed'}
+                    error = 'max_action_id < 0 not allowed'
+                    self.logger.error(error)
+                    return {'error': error}
 
                 if len(timespans_str) == 0:
-                    return {'error': 'at least one timespan is required'}
+                    error = 'at least one timespan is required'
+                    self.logger.error(error)
+                    return {'error': error}
 
                 if not all(len(timespan) == 2 and
                            isinstance(timespan[0], str) and
                            isinstance(timespan[1], str) for timespan in timespans_str):
-                    return {'error': 'invalid payload format'}
+                    error = 'invalid timespans format. expect [("start iso string", "stop iso string"), ...]'
+                    self.logger.error(error)
+                    return {'error': error}
 
                 timespans = [(dateutil.parser.parse(start_date), dateutil.parser.parse(end_date))
                              for start_date, end_date in timespans_str]
 
             except (KeyError, ValueError, TypeError) as e:
-                traceback.print_exc()
-                return {'error': "one or more fields {'timespans', 'max_action_id'} are invalid or missing:\n"+str(e)}
-
+                error = "one or more fields {'timespans', 'max_action_id'} are invalid or missing:\n"+str(e)
+                self.logger.exception(error, stack_info=True)
+                return {'error': error}
 
             self.result_max_action_id = max_action_id
             self.result_timespans = timespans
 
+            self.logger.debug("got max_action_id: {} and timespans: {}.".format(self.result_max_action_id,
+                                                                               self.result_timespans))
             return {'accepted': True}
         else:
+            self.logger.error("don't know how to handle the request.")
             return {'error': 'unknown request'}
 
 
@@ -189,6 +203,8 @@ class OnlineAgent(AgentBase):
     def __init__(self, identifier, token, core_config: CoreConfig):
 
         super().__init__(identifier, token, core_config, identifier, [], [], [])
+
+        self.logger.info("online agent created")
 
         try:
             self._create_collection()
@@ -243,8 +259,11 @@ class ModuleAgent(AgentBase):
         self.analyzer_stdout = []
         self.analyzer_stderr = []
 
+        self.logger.info("module agent created with identifier {}.".format(identifier, rebuild_all))
+
         try:
             if ensure_clean_repo:
+                self.logger.info("clean repository")
                 clean_repository(working_dir)
             self._create_collection(delete_after=False)
             self._create_user()
@@ -267,20 +286,24 @@ class ModuleAgent(AgentBase):
             assert(len(self.stack) == 0)
 
     async def execute(self):
-        print("executing analyzer...")
+        self.logger.info(
+            "executing analyzer with command line '{}' in working dir '{}', rebuild all: {}"
+                .format(self.cmdline, self.working_dir, self.rebuild_all)
+        )
 
-        proc = await asyncio.create_subprocess_exec(*self.cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env, cwd=self.working_dir)
+        proc = await asyncio.create_subprocess_exec(*self.cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                                    env=self.env, cwd=self.working_dir)
 
         stdout, stderr = await proc.communicate()
         self.analyzer_stdout = stdout.decode()
         self.analyzer_stderr = stderr.decode()
 
-        print(self.analyzer_stdout)
-        print(self.analyzer_stderr)
+        self.logger.info(self.analyzer_stdout)
+        self.logger.info(self.analyzer_stderr)
 
         if proc.returncode != 0:
             raise AnalyzerError("The analyzer return value was not zero.")
 
-        print("analyzer executed")
+        self.logger.info("analyzer executed")
 
 

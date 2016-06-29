@@ -1,8 +1,8 @@
 import asyncio
 import json
 import traceback
-from typing import Set
 import argparse
+import logging
 
 import os
 from functools import partial
@@ -140,15 +140,18 @@ class Supervisor:
             self.analyzer_state.transition(agent.analyzer_id, 'executing', 'executed', transition_args)
 
     def check_for_work(self):
+        logger = logging.getLogger('supervisor')
+
         planned = self.analyzer_state.planned_analyzers()
-        print("supervisor: check for work")
+        logger.debug("check for work")
         for analyzer in planned:
             # check for wish
+            # TODO also check wish for executing analyzers
             if self.analyzer_state.check_wish(analyzer, 'cancel'):
-                print("supervisor: cancelled {} upon request".format(analyzer['_id']))
+                logger.info("cancel analyzer {} upon request".format(analyzer['_id']))
                 continue
 
-            print("executing", analyzer['_id'])
+            logger.info("execute analyzer {}".format(analyzer['_id']))
 
             # create agent
             identifier = 'module_'+str(self._agent_id_creator())
@@ -182,6 +185,8 @@ def main():
     args = parser.parse_args()
 
     cc = CoreConfig('supervisor', args.CONFIG_FILES)
+
+    logging.basicConfig(level=logging.DEBUG)
 
     loop = asyncio.get_event_loop()
 
