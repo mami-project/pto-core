@@ -21,45 +21,19 @@ from .coreconfig import CoreConfig
 Interval = Tuple[datetime, datetime]
 
 
-VALIDATION_COMPARE_FIELDS = {'condition', 'time', 'path', 'value', 'sources', 'analyzer_id'}
+VALIDATION_COMPARE_FIELDS = {'conditions', 'time', 'path', 'value', 'sources', 'analyzer_id'}
 
 VALIDATION_INPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'_id'}
 
 VALIDATION_OUTPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'action_ids', 'valid'}
 
-COMPARE_PROJECTION = {'_id': 0, 'condition': 1, 'path': 1, 'analyzer_id': 1, 'sources': 1, 'value': 1}
+COMPARE_PROJECTION = {'_id': 0, 'conditions': 1, 'path': 1, 'analyzer_id': 1, 'sources': 1, 'value': 1}
 
 codec_opts = CodecOptions(document_class=OrderedDict)
 
 
 def collection_ensure_order(coll: Collection):
     return coll.with_options(codec_options=codec_opts)
-
-
-def schema_validator(analyzer_id, action_ids: int, timespan: Interval, outputs: Sequence[str]):
-    # extra validation needed for:
-    # - path: is a list of strings where each string is an IP, IP-prefix, tag or AS-number.
-    # - source: is a list of dicts where each dict is a valid source identifier
-    # - time.from <= time.to
-    return {
-        '$and': [
-            # complete
-            {'analyzer_id':  {'$type': 'int', '$eq': analyzer_id}},
-            {'condition':   {'$type': 'string', '$in': outputs}},
-            #{'valid':  True},
-            # TODO tell schema mongodb schema validator action_ids don't care if exist or not
-            # incomplete validation
-            {'source':      {'$exists': True}},
-            {'path':        {'$exists': True}},
-            {'$or': [
-                {'time':    {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                {'$and': [
-                    {'time.from':   {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                    {'time.to':     {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                ]}
-            ]}
-        ]
-    }
 
 pattern_ip4 = re.compile(r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$")
 
@@ -184,10 +158,10 @@ def validate(
             check(doc['analyzer_id'] == analyzer_id, obsid, 'wrong analyzer id',
                   'expected {}, got {}'.format(analyzer_id, doc['analyzer_id']))
 
-            # check that condition is defined in outputs
-            condition = doc['condition']
-            check(condition in output_types, obsid,
-                  'condition not declared in output_types', 'expected one of {}, got {}'.format(output_types, condition))
+            # check that conditions are defined in output_types
+            conditions = doc['conditions']
+            check(all(condition in output_types for condition in conditions), obsid,
+                  'condition(s) not declared in output_types', 'expected all of {} to be in {}'.format(conditions, output_types))
 
             # check that time is within any timespan
             time = doc['time']
@@ -205,7 +179,8 @@ def validate(
             # TODO
 
             # check that value is valid
-            check(valuechecks.checks[condition](doc['value']), obsid, 'value')
+            # TODO
+            #check(valuechecks.checks[condition](doc['value']), obsid, 'value')
 
             valid_count += 1
         except ValidationError as e:
