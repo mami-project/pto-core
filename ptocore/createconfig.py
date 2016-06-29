@@ -15,8 +15,8 @@ def main():
                         help='also create a MongoDB script and save it at the specified path. '
                              'use \'-\' for printing to standard output. you also need to specify --mongo-metadata.')
 
-    parser.add_argument('--mongo-host', help='hostname or IP address of mongo server (default: localhost).')
-    parser.add_argument('--mongo-port', type=int, default=27017, help='port of mongo server (default 27017).')
+    parser.add_argument('--mongo-host', help='hostname or IP address of mongo server (default: localhost).', default='localhost')
+    parser.add_argument('--mongo-port', type=int, help='port of mongo server (default 27017).', default=27017)
     parser.add_argument('--mongo-metadata', metavar='DATABASE',
                         help='if you want to create the MongoDB script, the name of the metadata database is needed.')
 

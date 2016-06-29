@@ -58,4 +58,4 @@ class CoreConfig:
 
         # validator specific
         if program_name == "validator":
-            self.validator_upload_filter = doc['validator']['upload_filter']
+            self.validator_upload_filter = doc['validator'].get('upload_filter')
