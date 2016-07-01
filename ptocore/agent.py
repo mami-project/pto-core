@@ -140,7 +140,7 @@ class AgentBase:
                 'mongo_uri':            mongo_uri,
                 'temporary_uri':        mongo_temporary_coll_uri,
                 'temporary_dbcoll':     (cc.temporary_db.name, self.identifier),
-                'observations_dbcoll':  (cc.observations_db.name, cc.observations_db.name),
+                'observations_dbcoll':  (cc.observations_db.name, cc.observations_coll.name),
                 'metadata_dbcoll':      (cc.metadata_db.name, cc.metadata_coll.name),
                 'action_log_dbcoll':    (cc.ptocore_db.name, cc.action_log.name),
                 'analyzer_id':          self.analyzer_id,
