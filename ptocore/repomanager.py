@@ -2,6 +2,8 @@ import os
 import re
 import subprocess
 from typing import Sequence
+import json
+import shutil
 
 
 class RepositoryError(Exception):
@@ -38,22 +40,28 @@ def clean_repository(repo_path: str):
 
 
 def procure_repository(base_path: str, analyzer_id: str, repo_url: str, repo_commit: str):
+    if len(analyzer_id) == 0:
+        raise NameNotAllowedError("analyzer_id has length zero.")
+
     if _expr_allowed_name.fullmatch(analyzer_id) is None:
         raise NameNotAllowedError()
 
     repo_path = os.path.join(base_path, analyzer_id)
 
-    if not os.path.exists(repo_path):
-        # directory doesn't exist, clone it
-        git_cmd(base_path, ['git', 'clone', repo_url, repo_path])
-    else:
-        # directory does exist, set remote url
-        git_cmd(repo_path, ['git', 'remote', 'set-url', 'origin', repo_url])
+    if os.path.exists(repo_path):
+        # delete analyzer repository
+        shutil.rmtree(repo_path)
+
+    git_cmd(base_path, ['git', 'clone', repo_url, repo_path])
 
     clean_repository(repo_path)
     git_cmd(repo_path, ['git', 'fetch', '-q'])
     git_cmd(repo_path, ['git', 'checkout', repo_commit])
 
+    config_fn = os.path.join(repo_path, 'ptocore.json')
+
+    with open(config_fn) as fp:
+        return json.load(fp)
 
 def get_repository_url(repo_path: str):
     ans = git_cmd(repo_path, ['git', 'config', '--get', 'remote.origin.url'])

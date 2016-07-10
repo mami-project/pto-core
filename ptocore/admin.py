@@ -14,17 +14,24 @@ from .coreconfig import CoreConfig
 app = flask.Flask('ptocore')
 CORS(app)
 
-analyzer_create_schema = {
+analyzer_create_params = {
+  "type": "object",
+  "properties": {
+    "repo_url":         {"type": "string" },
+    "repo_commit":      {"type": "string" },
+  },
+  "required": ["repo_url", "repo_commit"]
+}
+
+analyzer_spec = {
   "type": "object",
   "properties": {
     "input_formats":    {"type": "array", "items": {"type": "string"}},
     "input_types":      {"type": "array", "items": {"type": "string"}},
     "output_types":     {"type": "array", "items": {"type": "string"}},
     "command_line":     {"type": "array", "items": {"type": "string"}},
-    "repo_url":         {"type": "string" },
-    "repo_commit":      {"type": "string" },
   },
-  "required": ["input_formats", "input_types", "output_types", "command_line", "repo_url", "repo_commit"]
+  "required": ["input_formats", "input_types", "output_types", "command_line"]
 }
 
 analyzer_setrepo_schema = {
@@ -93,7 +100,7 @@ def request_create(analyzer_id):
         analyzer_state = get_analyzer_state()
 
         config = flask.request.get_json()
-        validate(config, analyzer_create_schema)
+        validate(config, analyzer_create_params)
 
         # clone repository into directory and checkout commit
         repo_url = config['repo_url']
@@ -101,12 +108,13 @@ def request_create(analyzer_id):
 
 
         # function will raise error if analyzer_id is not suitable (e.g. contains '/' etc..)
-        procure_repository(cc.admin_base_repo_path, analyzer_id, repo_url, repo_commit)
+        spec = procure_repository(cc.admin_base_repo_path, analyzer_id, repo_url, repo_commit)
+        validate(spec, analyzer_spec)
 
         repo_path = os.path.join(cc.admin_base_repo_path, analyzer_id)
 
-        analyzer_state.create_analyzer(analyzer_id, config['input_formats'], config['input_types'],
-                                   config['output_types'], config['command_line'], repo_path)
+        analyzer_state.create_analyzer(analyzer_id, spec['input_formats'], spec['input_types'],
+                                   spec['output_types'], spec['command_line'], repo_path)
 
         return flask.jsonify({'success': 'created'})
 
@@ -125,7 +133,13 @@ def request_setrepo(analyzer_id):
         repo_url = config['repo_url']
         repo_commit = config['repo_commit']
 
-        procure_repository(cc.admin_base_repo_path, analyzer_id, repo_url, repo_commit)
+        print(repo_url, repo_commit)
+
+        spec = procure_repository(cc.admin_base_repo_path, analyzer_id, repo_url, repo_commit)
+        validate(spec, analyzer_spec)
+
+        analyzer_state.update_analyzer(analyzer_id, spec['input_formats'], spec['input_types'],
+                                       spec['output_types'], spec['command_line'])
 
         return flask.jsonify({'success': 'repo updated'})
 

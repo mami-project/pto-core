@@ -21,6 +21,9 @@ class TransitionNotSupportedError(AnalyzerStateError):
 class TransitionFailed(AnalyzerStateError):
     pass
 
+class WrongState(AnalyzerStateError):
+    pass
+
 
 transition_domains = {
     'admin': {
@@ -113,6 +116,22 @@ class AnalyzerState:
         }
 
         self.analyzers_coll.insert_one(doc)
+
+    def update_analyzer(self, analyzer_id, input_formats=None, input_types=None, output_types=None, command_line=None):
+        if not self[analyzer_id]['state'] == 'disabled':
+            raise WrongState("updating analyzer only allowed in disabled state.")
+
+        query = {}
+        if input_formats is not None:
+            query['input_formats'] = input_formats
+        if input_types is not None:
+            query['input_types'] = input_types
+        if output_types is not None:
+            query['output_types'] = output_types
+        if command_line is not None:
+            query['command_line'] = command_line
+
+        self.analyzers_coll.update_one({'_id': analyzer_id}, {'$set': query})
 
     def request_wish(self, analyzer_id, wish):
         if wish not in ['cancel', 'disable']:
