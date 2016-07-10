@@ -8,6 +8,7 @@ def main():
     parser = argparse.ArgumentParser(description='create a new ptocore environment.')
 
     parser.add_argument('NAME', help='name of the new environment.')
+    parser.add_argument('PATH', help='absolute path to where analyzer modules should be stored.')
     parser.add_argument('--config-file', default='-',
                         help='path to where the configuration should be saved. '
                              'use \'-\' for printing to standard output (default).')
@@ -54,6 +55,11 @@ def main():
 
     name = args.NAME
 
+    base_repo_path = args.PATH
+    if os.path.isabs(base_repo_path) is False:
+        print("Please specify an absolute path. '{}' is not absolute.".format(base_repo_path))
+        exit(-1)
+
     sensor_username = name + '-sensor'
     sensor_password = input('sensor password: ') if args.ask_passwords else generate_password()
 
@@ -82,7 +88,8 @@ def main():
             'mongo_uri': mongo_uri_format.format(u=validator_username, p=validator_password)
         },
         'admin': {
-            'mongo_uri': mongo_uri_format.format(u=admin_username, p=admin_password)
+            'mongo_uri': mongo_uri_format.format(u=admin_username, p=admin_password),
+            'base_repo_path': base_repo_path
         }
     }
 
@@ -140,8 +147,8 @@ def main():
         }
 
         # build script
-        mongo_script = "/*\n * MongoDB script file to create users for ptocore environment '{}'\n */\n\n".format(name)
-        mongo_script += "use admin;\n\n"
+        mongo_script =  "/*\n * MongoDB script file to create users for ptocore environment '{}'".format(name)
+        mongo_script += " * Please make sure you are in the 'admin' database.\n */\n\n"
         mongo_script += "// sensor\n"
         mongo_script += "db.createUser(" + json.dumps(sensor_create_user, indent=2) + ");\n\n"
         mongo_script += "// supervisor\n"
