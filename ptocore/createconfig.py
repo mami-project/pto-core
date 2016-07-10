@@ -28,6 +28,10 @@ def main():
                         help='set the length of generated passwords (default 20).')
 
     parser.add_argument('--supervisor-port', type=int, default=33424)
+    parser.add_argument('--no-repo-cleaning', dest='ensure_clean_repo', action='store_false',
+                        help='analyzer module repositories are reset and cleaned before executing. set this flag to '
+                             'allow repositories to be dirty. useful in development environments because you don\'t '
+                             'have to commit everytime to test an analyzer module.')
 
     args = parser.parse_args()
 
@@ -82,7 +86,8 @@ def main():
         },
         'supervisor': {
             'mongo_uri': mongo_uri_format.format(u=supervisor_username, p=supervisor_password),
-            'listen_port': args.supervisor_port
+            'listen_port': args.supervisor_port,
+            'ensure_clean_repo': args.ensure_clean_repo
         },
         'validator': {
             'mongo_uri': mongo_uri_format.format(u=validator_username, p=validator_password)
