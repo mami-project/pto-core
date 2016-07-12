@@ -201,6 +201,7 @@ def commit(analyzer_id: int,
            repo_path: str,
            action_id_creator: Callable[[], int],
            timespans: Sequence[Interval],
+           max_action_id: int,
            temporary_coll: Collection,
            output_coll: Collection,
            output_types: Sequence[str],
@@ -323,6 +324,7 @@ def commit(analyzer_id: int,
         '_id': action_id,
         'output_types': output_types,
         'timespans': timespans,
+        'max_action_id': max_action_id,
         'action': 'analyze',
         'analyzer_id': analyzer_id,
         'git_url': git_url,
@@ -457,8 +459,9 @@ class Validator:
             exe_res = analyzer['execution_result']
             temporary_coll = self.cc.temporary_db[exe_res['temporary_coll']]
             valid_count, errors, action_id = commit(analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
-                                                    exe_res['timespans'], temporary_coll, self.cc.observations_coll,
-                                                    analyzer['output_types'], self.cc.action_log)
+                                                    exe_res['timespans'], exe_res['max_action_id'], temporary_coll,
+                                                    self.cc.observations_coll, analyzer['output_types'],
+                                                    self.cc.action_log)
 
             if len(errors) > 0:
                 print("analyzer {} with action id {} has at least {} valid records but {} have problems:".format(analyzer['_id'], action_id, valid_count, len(errors)))

@@ -37,36 +37,32 @@ class Sensitivity:
         self.input_types = input_types
         self.rebuild_all = rebuild_all
 
-    def find_last_run_id(self) -> int:
-        last_run = find_last_run(self.analyzer_id, self.action_log)
-        return last_run['_id'] if last_run is not None else -1
-
-    def changes_since(self) -> Tuple[int, pymongo.cursor.Cursor]:
-        if not self.rebuild_all:
-            last_run_id = self.find_last_run_id()
+        if rebuild_all:
+            self.last_max_action_id = -1
         else:
-            last_run_id = -1
+            last_run = find_last_run(analyzer_id, action_log)
+            self.last_max_action_id = last_run['max_action_id'] if last_run is not None else -1
 
-        changes = self.action_log.find({'_id': {'$gt': last_run_id},
+    def changes_since(self) -> pymongo.cursor.Cursor:
+        changes = self.action_log.find({'_id': {'$gt': self.last_max_action_id},
                                    '$or': [{'output_types': {'$in': self.input_types}},
                                            {'output_formats': {'$in': self.input_formats}}]
                                    })
 
-        return last_run_id, changes
+        return changes
 
     def any_changes(self) -> bool:
-        _, changes = self.changes_since()
-        return changes.count() > 0
+        return self.changes_since().count() > 0
 
     def basic(self) -> Tuple[int, Sequence[Interval]]:
         """
         Note: it is important that the cursor is iterated only once, because otherwise it could happen for example that
               max_action_id was computed from a different set than tl.intervals.
         """
-        last_run_id, changes = self.changes_since()
+        changes = self.changes_since()
 
         tl = Timeline()
-        max_action_id = last_run_id
+        max_action_id = self.last_max_action_id
         for change in changes:
             for timespan in change['timespans']:
                 start, end = timespan
