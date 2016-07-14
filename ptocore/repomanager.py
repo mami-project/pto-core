@@ -67,7 +67,9 @@ def get_repository_url(repo_path: str):
     ans = git_cmd(repo_path, ['git', 'config', '--get', 'remote.origin.url'])
     return ans.stdout.decode().strip()
 
-
 def get_repository_commit(repo_path: str):
     ans = git_cmd(repo_path, ['git', 'rev-parse', 'HEAD'])
     return ans.stdout.decode().strip()
+
+def get_repository_url_commit(repo_path: str):
+    return get_repository_url(repo_path), get_repository_commit(repo_path)

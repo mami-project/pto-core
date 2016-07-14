@@ -37,66 +37,29 @@ def find_counterpart(candidate, temporary_coll):
     return None
 
 
-def commit(analyzer_id: int,
-           repo_path: str,
-           action_id_creator: Callable[[], int],
-           timespans: Sequence[Interval],
-           max_action_id: int,
-           temporary_coll: Collection,
-           output_coll: Collection,
-           output_types: Sequence[str],
-           action_log: Collection,
-           abort_max_errors=100):
-
-    # repository is cleaned by supervisor prior to analyzer module execution
+def get_repo_info(self, analyzer_id, repo_path):
     try:
         git_commit = repomanager.get_repository_commit(repo_path)
         git_url = repomanager.get_repository_url(repo_path)
+        return git_url, git_commit
     except repomanager.RepositoryError as e:
         raise ValidationError(None, "either working_dir is not pointing to a git repository"
                               " or it's not possible to obtain commit and git url.",
                               "analyzer: '{}', working_dir: '{}'.".format(analyzer_id, repo_path)) from e
 
-    print("a. validating.")
-    valid_count, errors = validate(analyzer_id, timespans, temporary_coll, output_types, abort_max_errors)
 
-    if len(errors) > 0:
-        return valid_count, errors, 0
-
-    # create and set action_id
-    action_id = action_id_creator()
-
-    if not isinstance(action_id, int) or action_id < 0:
-        return 0, [(None, "action id has to be a non-negative integer.")], action_id
-
-    temporary_coll.update_many({}, {'$set': {'action_ids': [{'id': action_id, 'valid': True}]}})
-
-    # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
-    # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
-
-    print("b. determine candidates to invalidate")
-    def create_timespan_subquery(timespan: Interval):
-        return {'$or': [
-            {'time': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-            {'$and': [
-                {'time.from': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                {'time.to': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}}
-            ]}
-        ]}
-
-    # query to find candidates to invalidate
-    candidates_query = {'analyzer_id': analyzer_id,
-                        '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
-
-    print("candidates_query=", candidates_query)
-
-    # create hashes
-    for obs_group in grouper(temporary_coll.find(), 1000):
+def compute_hashes(coll: Collection):
+    for obs_group in grouper(coll.find(), 1000):
         bulk = [UpdateOne({'_id': obs['_id']}, {'$set': {'hash': create_hash(obs)}}) for obs in obs_group]
-        temporary_coll.bulk_write(bulk)
+        coll.bulk_write(bulk)
 
-    temporary_coll.create_index('hash')
+    coll.create_index('hash')
 
+
+def perform_commit(temporary_coll: Collection,
+                   output_coll: Collection,
+                   candidates_query: dict,
+                   action_id: int):
     print("c. find candidates")
     # 2. find all observations that exist both in the output collection and in the temporary collection
     candidates = output_coll.find(candidates_query)
@@ -159,6 +122,67 @@ def commit(analyzer_id: int,
 
         print("commit stats: deprecated(+)/undeprecated(-): {}, kept {}, added: {}".format(deprecated, kept, inserted))
 
+    print("perform critical write")
+    for block in grouper(create_output_ops(), 1000):
+        output_coll.bulk_write(list(block))
+
+
+def candidates_query_timespans(analyzer_id, timespans):
+    def create_timespan_subquery(timespan: Interval):
+        return {'$or': [
+            {'time': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+            {'$and': [
+                {'time.from': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+                {'time.to': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}}
+            ]}
+        ]}
+
+    # query to find candidates to invalidate
+    return {'analyzer_id': analyzer_id, '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
+
+
+def commit(analyzer_id: str,
+           repo_path: str,
+           action_id_creator: Callable[[], int],
+           timespans: Sequence[Interval],
+           max_action_id: int,
+           temporary_coll: Collection,
+           output_coll: Collection,
+           output_types: Sequence[str],
+           action_log: Collection,
+           abort_max_errors=100):
+
+    # get repository details
+    try:
+        git_url, git_commit = repomanager.get_repository_url_commit(repo_path)
+    except repomanager.RepositoryError as e:
+        raise ValidationError(None, "either working_dir is not pointing to a git repository"
+                              " or it's not possible to obtain commit and git url.",
+                              "analyzer: '{}', working_dir: '{}'.".format(analyzer_id, repo_path)) from e
+
+    print("a. validating.")
+    valid_count, errors = validate(analyzer_id, timespans, temporary_coll, output_types, abort_max_errors)
+
+    if len(errors) > 0:
+        return valid_count, errors, 0
+
+    # create and set action_id
+    action_id = action_id_creator()
+
+    if not isinstance(action_id, int) or action_id < 0:
+        return 0, [(None, "action id has to be a non-negative integer.")], action_id
+
+    temporary_coll.update_many({}, {'$set': {'action_ids': [{'id': action_id, 'valid': True}]}})
+
+    # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
+    # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
+
+    print("b. determine candidates to invalidate")
+    candidates_query = candidates_query_timespans(analyzer_id, timespans)
+
+    # create hashes
+    compute_hashes(temporary_coll)
+
     # action log
     action_log.insert_one({
         '_id': action_id,
@@ -171,10 +195,7 @@ def commit(analyzer_id: int,
         'git_commit': git_commit
     })
 
-    print("perform critical write")
-    for block in grouper(create_output_ops(), 1000):
-        output_coll.bulk_write(list(block))
-
+    perform_commit(temporary_coll, output_coll, candidates_query, action_id)
 
     print("f. done. drop temporary collection")
     # 5. finally delete collection
