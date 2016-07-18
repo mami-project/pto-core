@@ -152,6 +152,7 @@ class AnalyzerContext:
         self.result_timespans = [(datetime.min, datetime.max)]
         self.result_max_action_id = -1
 
+    # TODO set result for direct and basic/derived analyzers
     def set_result_info(self, max_action_id: int, timespans: Sequence[Interval]):
         self.result_timespans = timespans
         self.result_max_action_id = max_action_id

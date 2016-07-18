@@ -141,7 +141,58 @@ def candidates_query_timespans(analyzer_id, timespans):
     return {'analyzer_id': analyzer_id, '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
 
-def commit(analyzer_id: str,
+def commit_direct(analyzer_id: str,
+                  repo_path: str,
+                  action_id_creator: Callable[[], int],
+                  upload_action_id: int,
+                  temporary_coll: Collection,
+                  output_coll: Collection,
+                  output_types: Sequence[str],
+                  action_log: Collection,
+                  abort_max_errors=100):
+
+    upload_action_doc = action_log.find_one({'_id': upload_action_id})
+
+    candidates_query = {'analyzer_id': analyzer_id, 'sources': [upload_action_id]}
+
+    timespans = [
+        (upload_action_doc['meta']['start_time'], upload_action_doc['meta']['stop_time'])
+    ]
+
+    max_action_id = upload_action_id
+
+    # zuerst sensor neu basteln
+
+    return commit_base(analyzer_id, repo_path, action_id_creator, timespans, max_action_id,
+                       temporary_coll, output_coll, output_types, action_log, abort_max_errors)
+
+
+def commit_base(analyzer_id: str,
+                repo_path: str,
+                action_id_creator: Callable[[], int],
+                timespans: Sequence[Interval],
+                max_action_id: int,
+                temporary_coll: Collection,
+                output_coll: Collection,
+                output_types: Sequence[str],
+                action_log: Collection,
+                abort_max_errors=100):
+    # get repository details
+    try:
+        git_url, git_commit = repomanager.get_repository_url_commit(repo_path)
+    except repomanager.RepositoryError as e:
+        raise ValidationError(None, "either working_dir is not pointing to a git repository"
+                              " or it's not possible to obtain commit and git url.",
+                              "analyzer: '{}', working_dir: '{}'.".format(analyzer_id, repo_path)) from e
+
+    print("a. validating.")
+    valid_count, errors = validate(analyzer_id, timespans, temporary_coll, output_types, abort_max_errors)
+
+    if len(errors) > 0:
+        return valid_count, errors, 0
+
+
+def commit_derived(analyzer_id: str,
            repo_path: str,
            action_id_creator: Callable[[], int],
            timespans: Sequence[Interval],
@@ -193,6 +244,7 @@ def commit(analyzer_id: str,
         'analyzer_id': analyzer_id,
         'git_url': git_url,
         'git_commit': git_commit
+        # upload_id for direct analyzers
     })
 
     perform_commit(temporary_coll, output_coll, candidates_query, action_id)

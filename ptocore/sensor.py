@@ -44,8 +44,7 @@ class Sensor:
             git_url = repomanager.get_repository_url(repo_path)
             git_commit = repomanager.get_repository_commit(repo_path)
 
-            # check if code has changed and request rebuild if so.
-            # if last_run is None, then the value of rebuild_all does not matter
+            # check if code has changed and request rebuild if this is the case
             last_run = find_last_run(analyzer['_id'], self.action_log)
             rebuild_all = True
             if last_run is not None:
@@ -59,7 +58,7 @@ class Sensor:
             # find out if code has changed since last run and decide if the analyzer
             # has to rebuild all observations
 
-            if stv.any_changes():
+            if rebuild_all or stv.need_execution():
                 # okay let's do this. change state of analyzer to planned.
                 self.analyzer_state.transition(analyzer['_id'], 'sensing', 'planned', {'rebuild_all': rebuild_all})
 

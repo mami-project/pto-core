@@ -180,6 +180,8 @@ class AgentBase:
                 timespans = [(dateutil.parser.parse(start_date), dateutil.parser.parse(end_date))
                              for start_date, end_date in timespans_str]
 
+                # TODO compact timespans using timeline
+
             except (KeyError, ValueError, TypeError) as e:
                 error = "one or more fields {'timespans', 'max_action_id'} are invalid or missing:\n"+str(e)
                 self.logger.exception(error, stack_info=True)

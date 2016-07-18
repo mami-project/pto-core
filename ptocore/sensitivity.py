@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta
 from typing import Tuple, Sequence, Callable
+from itertools import takewhile
 
 import pymongo
 from pymongo.collection import Collection
+from bson.objectid import ObjectId
 
 from ptocore.timeline import Timeline
 
 Interval = Tuple[datetime, datetime]
+
 
 def extend_hourly(interval: Interval) -> Interval:
     start, stop = interval
@@ -19,84 +22,96 @@ def extend_hourly(interval: Interval) -> Interval:
 
     return start, stop
 
-def find_last_run(analyzer_id, action_log) -> dict:
-    docs = action_log.find({'action': 'analyze', 'analyzer_id': analyzer_id})\
-        .sort('_id', pymongo.DESCENDING).limit(1)
-    try:
-        return docs[0]
-    except IndexError:
-        return None
+class ActionSet:
+    def __init__(self,
+                 analyzer_id: str,
+                 git_url: str,
+                 git_commit: str,
+                 input_types: Sequence[str],
+                 input_formats: Sequence[str],
+                 action_log: Collection):
 
-class Sensitivity:
-    def __init__(self, action_log: Collection, analyzer_id: str,
-                 input_formats: Sequence[str], input_types: Sequence[str],
-                 rebuild_all: bool):
-        self.action_log = action_log
-        self.analyzer_id = analyzer_id
-        self.input_formats = input_formats
-        self.input_types = input_types
-        self.rebuild_all = rebuild_all
+        self.direct_allowed = len(input_types) == 0
 
-        if rebuild_all:
-            self.last_max_action_id = -1
-        else:
-            last_run = find_last_run(analyzer_id, action_log)
-            self.last_max_action_id = last_run['max_action_id'] if last_run is not None else -1
+        self._load_input_actions(input_types, input_formats, action_log)
+        self._load_output_actions(analyzer_id, git_url, git_commit, action_log)
 
-    def changes_since(self) -> pymongo.cursor.Cursor:
-        changes = self.action_log.find({'_id': {'$gt': self.last_max_action_id},
-                                   '$or': [{'output_types': {'$in': self.input_types}},
-                                           {'output_formats': {'$in': self.input_formats}}]
-                                   })
+        self.max_action_id = max(self.input_max_action_id, self.output_max_action_id)
 
-        return changes
+    def _load_input_actions(self, input_types, input_formats, action_log):
+        query = {
+            '$or': [
+                {'output_types': {'$in': input_types}},
+                {'output_formats': {'$in': input_formats}}
+            ]
+        }
 
-    def any_changes(self) -> bool:
-        return self.changes_since().count() > 0
+        result = action_log.find(query, {'timespans': 1}).sort([('_id', pymongo.DESCENDING)])
+        self.input_actions = list(result)
 
-    def basic(self) -> Tuple[int, Sequence[Interval]]:
-        """
-        Note: it is important that the cursor is iterated only once, because otherwise it could happen for example that
-              max_action_id was computed from a different set than tl.intervals.
-        """
-        changes = self.changes_since()
+        self.input_max_action_id = self.input_actions[0]['_id'] if len(self.input_actions) > 0 else -1
 
-        tl = Timeline()
-        max_action_id = self.last_max_action_id
-        for change in changes:
-            for timespan in change['timespans']:
-                start, end = timespan
-                tl.add(start, end)
+    def _load_output_actions(self, analyzer_id, git_url, git_commit, action_log: Collection):
+        query = {'analyzer_id': analyzer_id}
+        proj = {'_id': 1, 'git_url': 1, 'git_commit': 1, 'timespans': 1, 'upload_id': 1}
 
-            if max_action_id < change['_id']:
-                max_action_id = change['_id']
+        def same_code(doc):
+            return doc['git_url'] == git_url and doc['git_commit'] == git_commit
 
-        return max_action_id, tl.intervals
+        result = action_log.find(query, proj).sort([('_id', pymongo.DESCENDING)])
+        self.output_actions = list(takewhile(same_code, result))
 
-    def naive(self) -> Tuple[int, Sequence[Interval]]:
-        last_run_id, changes = self.changes_since()
+        # this is the maximum action_id known prior to executing the analyzer. why not just the _id?
+        # note that the validator assigns the action_id after execution of the analyzer.
+        # because it can happen that between start and finish of the analyzer an upload is added or an upstream
+        # analyzer module has finished.
+        # therefore the analyzer has to state the maximum action id it has considered.
+        self.output_max_action_id = self.output_actions[0]['max_action_id'] if len(self.output_actions) > 0 else -1
 
-        max_doc = list(changes.sort('_id', pymongo.DESCENDING).limit(1))
+    def has_unprocessed_data(self):
+        return self.input_max_action_id > self.output_max_action_id
 
-        max_action_id = max_doc[0]['_id'] if len(max_doc) > 0 else last_run_id
+def direct(action_set: ActionSet) -> Sequence[ObjectId]:
+    if not action_set.direct_allowed:
+        raise ValueError("Cannot use direct sensitivity for basic/dervied analyzer modules."
+                         "Check that input_types is an empty list.")
 
-        if last_run_id != max_action_id:
-            return max_action_id, [(datetime.min, datetime.max)]
-        else:
-            return max_action_id, []
+    uploads_processed = set(action['upload_id'] for action in action_set.output_actions)
 
-    def aggregating(self, extend_func: Callable[[Interval], Interval]) -> Tuple[int, Sequence[Interval]]:
-        last_run_id, changes = self.changes_since()
+    uploads_all = (action['upload_id'] for action in action_set.input_actions)
 
-        tl = Timeline()
-        max_action_id = last_run_id
-        for change in changes:
-            for timespan in change['timespans']:
-                timespan_extended = extend_func(timespan)
-                tl.add(timespan_extended[0], timespan_extended[1])
+    uploads_unprocessed = [upload for upload in uploads_all if upload not in uploads_processed]
 
-            if max_action_id < change['_id']:
-                max_action_id = change['_id']
+    return action_set.max_action_id, uploads_unprocessed
 
-        return max_action_id, tl.intervals
+def _get_timeline(actions):
+    tl = Timeline()
+    for action in actions:
+        for timespan in action['timespans']:
+            start, end = timespan
+            tl.add_interval(start, end)
 
+    return tl
+
+def basic(action_set: ActionSet) -> Tuple[int, Sequence[Interval]]:
+    input_tl = _get_timeline(action_set.input_actions)
+    output_tl = _get_timeline(action_set.output_actions)
+
+    return action_set.max_action_id, (input_tl - output_tl).intervals
+
+def aggregating(extend_func: Callable[[Interval], Interval],
+                action_set: ActionSet) -> Tuple[int, Sequence[Interval]]:
+
+    max_action_id, timespans = basic(action_set)
+
+    tl = Timeline()
+    for timespan in timespans:
+        timespan_extended = extend_func(timespan)
+        tl.add_interval(timespan_extended[0], timespan_extended[1])
+
+    return max_action_id, tl.intervals
+
+
+def margin(offset: float,
+           action_set: ActionSet):
+    pass
