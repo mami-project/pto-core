@@ -52,7 +52,6 @@ class CoreConfig:
 
         # admin specific
         if program_name == "admin":
-            self.admin_static_path = doc['admin']['static_path']
             self.admin_base_repo_path = doc['admin']['base_repo_path']
 
         # validator specific
