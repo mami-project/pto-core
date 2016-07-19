@@ -71,18 +71,19 @@ def get_analyzer_state():
     return AnalyzerState('admin', cc.analyzers_coll)
 
 
-@app.route('/static/<path:path>')
-def send_static(path):
-    cc = get_core_config()
-    return flask.send_from_directory(cc.admin_static_path, path)
-
 
 @app.route('/analyzer', methods=['GET'])
 def list_analyzers():
     cc = get_core_config()
-    cursor = cc.analyzers_coll.find({}, {'_id': 1, 'state': 1})
+    cursor = cc.analyzers_coll.find({})
 
-    records = [{'analyzer_id': doc['_id'], 'state': doc['state']} for doc in cursor]
+    records = []
+    for doc in cursor:
+        print(doc)
+        record = dict(doc)
+        if 'upload_ids' in record['execution_result']:
+            record['execution_result']['upload_ids'] = [str(x) for x in record['execution_result']['upload_ids']]
+        records.append(record)
     return flask.jsonify(records)
 
 
