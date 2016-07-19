@@ -13,7 +13,7 @@ from .collutils import grouper_transpose
 from .analyzerstate import AnalyzerState
 from .mongoutils import AutoIncrementFactory
 from .coreconfig import CoreConfig
-from .commit import commit
+from .commit import commit_direct, commit_normal
 
 Interval = Tuple[datetime, datetime]
 
@@ -107,7 +107,7 @@ class Validator:
                     'output_formats': [upload['meta']['format']],
                     'timespans': timespans,
                     'action': 'upload',
-                    'upload_id': upload['_id']
+                    'upload_ids': [upload['_id']]
                 })
 
                 yield uploads_query, action_log_query
@@ -136,10 +136,31 @@ class Validator:
 
             exe_res = analyzer['execution_result']
             temporary_coll = self.cc.temporary_db[exe_res['temporary_coll']]
-            valid_count, errors, action_id = commit(analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
-                                                    exe_res['timespans'], exe_res['max_action_id'], temporary_coll,
-                                                    self.cc.observations_coll, analyzer['output_types'],
-                                                    self.cc.action_log)
+
+            if exe_res['timespans'] is not None and exe_res['upload_ids'] is not None:
+                self.analyzer_state.transition_to_error(analyzer['_id'],
+                    'internal error: either timespans or upload_ids can have a '
+                    'value but not both. I cannot decide if direct or normal analyzer')
+                continue
+
+            if exe_res['timespans'] is None and exe_res['upload_ids'] is None:
+                self.analyzer_state.transition_to_error(analyzer['_id'],
+                    'internal error: it\'s not allowed to have both timespans and upload_ids to be None. '
+                    'I cannot decide if direct or normal analyzer')
+                continue
+
+            if exe_res['upload_ids'] is not None:
+                valid_count, errors, action_id = commit_direct(
+                    analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
+                    exe_res['upload_ids'], exe_res['max_action_id'], temporary_coll,
+                    self.cc.observations_coll, analyzer['output_types'],
+                    self.cc.action_log)
+            else:
+                valid_count, errors, action_id = commit_normal(
+                    analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
+                    exe_res['timespans'], exe_res['max_action_id'], temporary_coll,
+                    self.cc.observations_coll, analyzer['output_types'],
+                    self.cc.action_log)
 
             if len(errors) > 0:
                 print("analyzer {} with action id {} has at least {} valid records but {} have problems:".format(analyzer['_id'], action_id, valid_count, len(errors)))
@@ -150,6 +171,7 @@ class Validator:
             else:
                 print("successfully commited analyzer {} run with action id {}. {} records inserted".format(analyzer['_id'], action_id, valid_count))
                 self.analyzer_state.transition(analyzer['_id'], 'validating', 'sensing', {'action_id': action_id})
+
 
     def check_for_work(self):
         print("validator: check for work")

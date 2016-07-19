@@ -5,15 +5,15 @@ Manages the execution of an analyzer (script or online).
 import asyncio
 from typing import Sequence, Tuple
 from datetime import datetime
-import traceback
 import json
 import os
 import subprocess
 import logging
 
 import dateutil.parser
+from bson.objectid import ObjectId
 
-from .repomanager import clean_repository
+from .repomanager import clean_repository, get_repository_url_commit
 from .coreconfig import CoreConfig
 
 Interval = Tuple[datetime, datetime]
@@ -34,7 +34,7 @@ class AgentBase:
     # TODO: check mongo return values & exceptions
     def __init__(self, identifier, token, core_config: CoreConfig, analyzer_id: str,
                  input_formats: Sequence[str], input_types: Sequence[str], output_types: Sequence[str],
-                 rebuild_all: bool=False):
+                 git_url: str, git_commit: str):
 
         self.logger = AgentLoggerAdapter(logging.getLogger("ptocore.supervisor.agent"), {'analyzer_id': analyzer_id})
         self.analyzer_id = analyzer_id
@@ -47,11 +47,13 @@ class AgentBase:
         self.input_types = input_types
         self.output_types = output_types
 
-        self.rebuild_all = rebuild_all
-
         # set by set_result_info in analyzercontext. is mandatory for module analyzers, no effect for online analyzers.
         self.result_timespans = None
         self.result_max_action_id = None
+        self.result_upload_ids = None
+
+        self.git_url = git_url
+        self.git_commit = git_commit
 
         # a list of cleanup coroutines for reverting in case of error
         self.stack = []
@@ -147,7 +149,8 @@ class AgentBase:
                 'input_formats':        self.input_formats,
                 'input_types':          self.input_types,
                 'output_types':         self.output_types,
-                'rebuild_all':          self.rebuild_all
+                'git_url':              self.git_url,
+                'git_commit':           self.git_commit
             }
         elif action == 'get_spark':
             self.logger.debug("returned spark config.")
@@ -188,10 +191,40 @@ class AgentBase:
                 return {'error': error}
 
             self.result_max_action_id = max_action_id
+            self.result_upload_ids = None
             self.result_timespans = timespans
 
             self.logger.debug("got max_action_id: {} and timespans: {}.".format(self.result_max_action_id,
                                                                                self.result_timespans))
+            return {'accepted': True}
+        elif action == 'set_result_info_direct':
+            try:
+                max_action_id = int(payload['max_action_id'])
+                upload_ids_str = payload['upload_ids']
+
+                if max_action_id < 0:
+                    error = 'max_action_id < 0 not allowed'
+                    self.logger.error(error)
+                    return {'error': error}
+
+                if len(upload_ids_str) == 0:
+                    error = 'at least one upload_id is required'
+                    self.logger.error(error)
+                    return {'error': error}
+
+                upload_ids = [ObjectId(upload_id) for upload_id in upload_ids_str]
+
+            except (KeyError, ValueError, TypeError) as e:
+                error = "one or more fields {'timespans', 'max_action_id'} are invalid or missing:\n"+str(e)
+                self.logger.exception(error, stack_info=True)
+                return {'error': error}
+
+            self.result_max_action_id = max_action_id
+            self.result_upload_ids = upload_ids
+            self.result_timespans = None
+
+            self.logger.debug("got max_action_id: {} and timespans: {}.".format(self.result_max_action_id,
+                                                                                self.result_upload_ids))
             return {'accepted': True}
         else:
             self.logger.error("don't know how to handle the request.")
@@ -204,7 +237,7 @@ class AgentBase:
 class OnlineAgent(AgentBase):
     def __init__(self, identifier, token, core_config: CoreConfig):
 
-        super().__init__(identifier, token, core_config, identifier, [], [], [])
+        super().__init__(identifier, token, core_config, identifier, [], [], [], '', '')
 
         self.logger.info("online agent created")
 
@@ -239,11 +272,12 @@ class ModuleAgent(AgentBase):
                  output_types: Sequence[str],
                  cmdline: Sequence[str],
                  working_dir: str,
-                 rebuild_all: bool,
                  ensure_clean_repo: bool):
 
+        git_url, git_commit = get_repository_url_commit(working_dir)
+
         super().__init__(identifier, token, core_config, analyzer_id,
-                         input_formats, input_types, output_types, rebuild_all)
+                         input_formats, input_types, output_types, git_url, git_commit)
 
         self.cmdline = cmdline
         self.working_dir = working_dir
@@ -261,7 +295,7 @@ class ModuleAgent(AgentBase):
         self.analyzer_stdout = []
         self.analyzer_stderr = []
 
-        self.logger.info("module agent created with identifier {}.".format(identifier, rebuild_all))
+        self.logger.info("module agent created with identifier {}.".format(identifier))
 
         try:
             if ensure_clean_repo:
@@ -289,8 +323,8 @@ class ModuleAgent(AgentBase):
 
     async def execute(self):
         self.logger.info(
-            "executing analyzer with command line '{}' in working dir '{}', rebuild all: {}"
-                .format(self.cmdline, self.working_dir, self.rebuild_all)
+            "executing analyzer with command line '{}' in working dir '{}'"
+                .format(self.cmdline, self.working_dir)
         )
 
         proc = await asyncio.create_subprocess_exec(*self.cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

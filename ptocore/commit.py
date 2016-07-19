@@ -4,6 +4,7 @@ from hashlib import sha1
 
 from pymongo.collection import Collection
 from pymongo.operations import UpdateOne, InsertOne
+from bson.objectid import ObjectId
 
 from .collutils import grouper, rflatten, dict_to_sorted_list
 from . import repomanager
@@ -144,27 +145,29 @@ def candidates_query_timespans(analyzer_id, timespans):
 def commit_direct(analyzer_id: str,
                   repo_path: str,
                   action_id_creator: Callable[[], int],
-                  upload_action_id: int,
+                  upload_ids: Sequence[ObjectId],
+                  max_action_id: int,
                   temporary_coll: Collection,
                   output_coll: Collection,
                   output_types: Sequence[str],
                   action_log: Collection,
                   abort_max_errors=100):
+    # get action id for each upload
+    timespans = []
+    for upload_id in upload_ids:
+        action_doc = action_log.find_one({'action': 'upload', 'upload_ids': [upload_id]})
+        if action_doc is None:
+            raise ValidationError(None, "cannot find the action_id of given upload_id", repr(upload_id))
 
-    upload_action_doc = action_log.find_one({'_id': upload_action_id})
+        timespans.append((action_doc['meta']['start_time'], action_doc['meta']['stop_time']))
+
 
     candidates_query = {'analyzer_id': analyzer_id, 'sources': [upload_action_id]}
 
-    timespans = [
-        (upload_action_doc['meta']['start_time'], upload_action_doc['meta']['stop_time'])
-    ]
+    # create and set action_id
+    action_id = action_id_creator()
 
-    max_action_id = upload_action_id
-
-    # zuerst sensor neu basteln
-
-    return commit_base(analyzer_id, repo_path, action_id_creator, timespans, max_action_id,
-                       temporary_coll, output_coll, output_types, action_log, abort_max_errors)
+    return perform_commit(temporary_coll, output_coll, candidates_query, )
 
 
 def commit_base(analyzer_id: str,

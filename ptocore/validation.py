@@ -92,7 +92,7 @@ def validate(
 
             # check that sources exist
             check(isinstance(doc['sources'], list), obsid, 'sources field is not a list')
-            # TODO
+            # TODO in case of direct analyzer make sure that the field sources only contains one element set in the execution_result
 
             # check that value is valid
             # TODO

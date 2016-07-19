@@ -23,10 +23,11 @@ def extend_hourly(interval: Interval) -> Interval:
 
     return start, stop
 
+
 class ActionSetBase:
     def __init__(self,
-                 input_types: Sequence[str],
-                 input_formats: Sequence[str]):
+                 input_formats: Sequence[str],
+                 input_types: Sequence[str]):
         self._input_types = input_types
         self._input_formats = input_formats
 
@@ -44,14 +45,15 @@ class ActionSetBase:
     def has_unprocessed_data(self):
         return self.input_max_action_id > self.output_max_action_id
 
+
 class ActionSetTest(ActionSetBase):
     def __init__(self,
                  input_actions: Sequence[dict],
                  output_actions: Sequence[dict],
-                 input_types: Sequence[str],
-                 input_formats: Sequence[str]):
+                 input_formats: Sequence[str],
+                 input_types: Sequence[str]):
 
-        super().__init__(input_types, input_formats)
+        super().__init__(input_formats, input_types)
         self.input_actions = input_actions
         if len(input_actions) > 0:
             self.input_max_action_id = max(action['_id'] for action in input_actions)
@@ -86,14 +88,14 @@ class ActionSetMongo(ActionSetBase):
             ]
         }
 
-        result = action_log.find(query, {'timespans': 1}).sort([('_id', pymongo.DESCENDING)])
+        result = action_log.find(query, {'timespans': 1, 'upload_ids': 1}).sort([('_id', pymongo.DESCENDING)])
         self.input_actions = list(result)
 
         self.input_max_action_id = self.input_actions[0]['_id'] if len(self.input_actions) > 0 else -1
 
     def _load_output_actions(self, analyzer_id, git_url, git_commit, action_log: Collection):
         query = {'analyzer_id': analyzer_id}
-        proj = {'_id': 1, 'git_url': 1, 'git_commit': 1, 'timespans': 1, 'upload_id': 1}
+        proj = {'_id': 1, 'git_url': 1, 'git_commit': 1, 'timespans': 1, 'upload_ids': 1}
 
         def same_code(doc):
             return doc['git_url'] == git_url and doc['git_commit'] == git_commit
@@ -109,7 +111,7 @@ class ActionSetMongo(ActionSetBase):
         self.output_max_action_id = self.output_actions[0]['max_action_id'] if len(self.output_actions) > 0 else -1
 
 
-def direct(action_set: ActionSetBase) -> Sequence[ObjectId]:
+def direct(action_set: ActionSetBase) -> Sequence[Tuple[ObjectId, int]]:
     if not action_set.is_direct_allowed():
         raise ValueError("Cannot use direct sensitivity for basic/dervied analyzer modules."
                          "Check that input_types is an empty list.")
@@ -124,13 +126,18 @@ def direct(action_set: ActionSetBase) -> Sequence[ObjectId]:
     # Upon change of analyzer code, all previous invocations of analyzer module don't show up anymore in output_actions already.
     #
 
-    # get the maximum action_id for each upload
+    # get the maximum action_id (last change) and minimum action_id (upload) for each upload
     uploads_max_action_id = OrderedDict()
+    uploads_min_action_id = OrderedDict()
     for action in action_set.input_actions:
-        uid = action['upload_id']
+        # the list upload has exactly one item
+        uid = action['upload_ids'][0]
         aid = action['_id']
         if uploads_max_action_id.get(uid, -1) < aid:
             uploads_max_action_id[uid] = aid
+
+        if action['action'] == 'upload':
+            uploads_min_action_id[uid] = aid
 
     # for each upload determine if it has been analyzed
     uploads_processed = []
@@ -144,6 +151,7 @@ def direct(action_set: ActionSetBase) -> Sequence[ObjectId]:
 
     return action_set.get_max_action_id(), uploads_unprocessed
 
+
 def _get_timeline(actions):
     tl = Timeline()
     for action in actions:
@@ -153,11 +161,13 @@ def _get_timeline(actions):
 
     return tl
 
+
 def basic(action_set: ActionSetBase) -> Tuple[int, Sequence[Interval]]:
     input_tl = _get_timeline(action_set.input_actions)
     output_tl = _get_timeline(action_set.output_actions)
 
     return action_set.get_max_action_id(), (input_tl - output_tl).intervals
+
 
 def aggregating(extend_func: Callable[[Interval], Interval],
                 action_set: ActionSetBase) -> Tuple[int, Sequence[Interval]]:

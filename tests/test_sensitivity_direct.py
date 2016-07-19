@@ -10,7 +10,7 @@ upload_a = {
     'action': 'upload',
     'output_formats': ['format0'],
     'timespans': [[datetime(2016, 6, 12, 0, 0), datetime(2016, 6, 13, 0, 0)]],
-    'upload_id': ObjectId('A76670ee31e34a281d600a31')
+    'upload_ids': [ObjectId('A76670ee31e34a281d600a31')]
 }
 
 analyze_a = {
@@ -31,7 +31,7 @@ upload_b = {
     'action': 'upload',
     'output_formats': ['format0'],
     'timespans': [[datetime(2016, 6, 12, 0, 0), datetime(2016, 6, 13, 0, 0)]],
-    'upload_id': ObjectId('B76670ee31e34a281d600a31')
+    'upload_ids': [ObjectId('B76670ee31e34a281d600a31')]
 }
 
 analyze_b = {
@@ -52,7 +52,7 @@ mark_invalid_a = {
     'action': 'marked_invalid',
     'output_formats': ['format0'],
     'timespans': [[datetime(2016, 6, 12, 0, 0), datetime(2016, 6, 13, 0, 0)]],
-    'upload_id': ObjectId('A76670ee31e34a281d600a31')
+    'upload_ids': [ObjectId('A76670ee31e34a281d600a31')]
 }
 
 analyze_a_2 = {
@@ -73,7 +73,7 @@ mark_valid_a = {
     'action': 'marked_valid',
     'output_formats': ['format0'],
     'timespans': [[datetime(2016, 6, 12, 0, 0), datetime(2016, 6, 13, 0, 0)]],
-    'upload_id': ObjectId('A76670ee31e34a281d600a31')
+    'upload_ids': [ObjectId('A76670ee31e34a281d600a31')]
 }
 
 class TestSensitivityDirect(unittest.TestCase):

@@ -14,7 +14,7 @@ from pymongo import MongoClient
 
 from .jsonprotocol import JsonProtocol
 from . import validator
-from .sensitivity import Sensitivity
+from . import sensitivity
 
 Interval = Tuple[datetime, datetime]
 
@@ -139,10 +139,10 @@ class AnalyzerContext:
         self.input_formats = ans['input_formats']
         self.input_types = ans['input_types']
         self.output_types = ans['output_types']
-        self.rebuild_all = ans['rebuild_all']
+        self.git_url = ans['git_url']
+        self.git_commit = ans['git_commit']
 
-        self.sensitivity = Sensitivity(self.action_log, self.analyzer_id, self.input_formats,
-                                       self.input_types, self.rebuild_all)
+        self.action_set = sensitivity.ActionSetMongo(self.analyzer_id, self.git_url, self.git_commit, self.input_formats, self.input_types, self.action_log)
 
         # more contexts are loaded on demand
         self._spark_context = None
@@ -155,10 +155,22 @@ class AnalyzerContext:
     # TODO set result for direct and basic/derived analyzers
     def set_result_info(self, max_action_id: int, timespans: Sequence[Interval]):
         self.result_timespans = timespans
+        self.result_upload_ids = []
         self.result_max_action_id = max_action_id
 
         timespans_str = [(start_date.isoformat(), end_date.isoformat()) for start_date, end_date in timespans]
         ans = self.supervisor.request('set_result_info', {'max_action_id': max_action_id, 'timespans': timespans_str})
+        if 'error' in ans:
+            raise ContextError(ans['error'])
+
+    def set_result_info_direct(self, max_action_id: int, upload_ids):
+        self.result_max_action_id = max_action_id
+        self.result_upload_ids = upload_ids
+        self.result_timespans = []
+
+        payload = {'max_action_id': max_action_id, 'upload_ids': [str(x) for x in upload_ids]}
+
+        ans = self.supervisor.request('set_result_info_direct', payload)
         if 'error' in ans:
             raise ContextError(ans['error'])
 
@@ -220,6 +232,25 @@ class AnalyzerContext:
 
         if self.verbose:
             print("spark_uploads query:\n"+str(query))
+
+        return self.spark_uploads_query(query)
+
+    def spark_uploads_direct(self):
+        action_id_name = 'action_id.'+self.environment
+        valid_name = 'valid.'+self.environment
+
+        if self.result_max_action_id < 0:
+            action_id_condition = {'$exists': True}
+        else:
+            action_id_condition = {'$lte': self.result_max_action_id}
+
+        query = {
+            'complete': True,
+            action_id_name: action_id_condition,
+            valid_name: True,
+            'meta.format': {'$in': ["ecnspider1-zip-csv-ipfix"]},
+            '$or': [{'_id': upload_id for upload_id in self.result_upload_ids}]
+        }
 
         return self.spark_uploads_query(query)
 

@@ -1,9 +1,10 @@
 from time import sleep
 import argparse
+import logging
 
 from pymongo.collection import Collection
 
-from .sensitivity import Sensitivity, find_last_run
+from . import sensitivity
 from .analyzerstate import AnalyzerState
 from .coreconfig import CoreConfig
 from . import repomanager
@@ -15,27 +16,31 @@ class Sensor:
         self.action_log = action_log
 
     def check(self):
-        print("sensor: check for work")
+        logger = logging.getLogger('sensor')
+
+        logger.info("check for work")
         sensing = self.analyzer_state.sensing_analyzers()
         for analyzer in sensing:
             # check for wishes
             if self.analyzer_state.check_wish(analyzer, 'disable'):
-                print("sensor: disabled {} upon request".format(analyzer['_id']))
+                logger.info("disabled {} upon request".format(analyzer['_id']))
                 continue
 
             if self.analyzer_state.check_wish(analyzer, 'cancel'):
-                print("sensor: cancelled {} upon request".format(analyzer['_id']))
+                logger.info("cancelled {} upon request".format(analyzer['_id']))
                 continue
 
+            logger.debug("check situation for {}: input_types={}, input_formats={}"
+                         .format(analyzer['_id'],analyzer['input_formats'], analyzer['input_types']))
             # check types
             blocked_types = self.analyzer_state.blocked_types()
-            print("blocked_types:", blocked_types)
+            logger.debug("blocked_types: {}".format(str(blocked_types)))
             if any(output_type in blocked_types for output_type in analyzer['output_types']):
                 # TODO set 'stalled_reason' = "output blocked" in analyzers_coll
                 continue
 
             unstable_types = self.analyzer_state.unstable_types()
-            print("unstable_types:", unstable_types)
+            logger.debug("unstable_types: {}".format(str(unstable_types)))
             if any(input_type in unstable_types for input_type in analyzer['input_types']):
                 # TODO set 'stalled_reason' = "input unstable" in analyzers_coll
                 continue
@@ -44,23 +49,17 @@ class Sensor:
             git_url = repomanager.get_repository_url(repo_path)
             git_commit = repomanager.get_repository_commit(repo_path)
 
-            # check if code has changed and request rebuild if this is the case
-            last_run = find_last_run(analyzer['_id'], self.action_log)
-            rebuild_all = True
-            if last_run is not None:
-                if last_run['git_url'] == git_url and last_run['git_commit'] == git_commit:
-                    rebuild_all = False
+            action_set = sensitivity.ActionSetMongo(analyzer['_id'], git_url, git_commit, analyzer['input_formats'],
+                                                    analyzer['input_types'], self.action_log)
 
-            # create sensitivity object, note that we don't know rebuild_all yet.
-            stv = Sensitivity(self.action_log, analyzer['_id'], analyzer['input_formats'],
-                              analyzer['input_types'], rebuild_all)
+            logger.debug('action set: {}, {}'.format(action_set.input_actions, action_set.output_actions))
 
             # find out if code has changed since last run and decide if the analyzer
             # has to rebuild all observations
 
-            if rebuild_all or stv.need_execution():
+            if action_set.has_unprocessed_data():
                 # okay let's do this. change state of analyzer to planned.
-                self.analyzer_state.transition(analyzer['_id'], 'sensing', 'planned', {'rebuild_all': rebuild_all})
+                self.analyzer_state.transition(analyzer['_id'], 'sensing', 'planned')
 
                 # the input types and output types specified in the analyzer are now blocked
 
@@ -72,6 +71,8 @@ def main():
     args = parser.parse_args()
 
     cc = CoreConfig('sensor', args.CONFIG_FILES)
+
+    logging.basicConfig(level=logging.DEBUG)
 
     sens = Sensor(cc.analyzers_coll, cc.action_log)
     while True:

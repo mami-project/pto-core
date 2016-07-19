@@ -42,6 +42,7 @@ class SupervisorServer(JsonProtocol):
 class Supervisor:
     def __init__(self, core_config: CoreConfig, loop=None):
         self.loop = loop or asyncio.get_event_loop()
+        self.logger = logging.getLogger('supervisor')
 
         self.core_config = core_config
 
@@ -67,6 +68,7 @@ class Supervisor:
         # delete existing users and roles attached to this supervisor
         temp_db = self.core_config.temporary_db
 
+        # delete users
         userdicts = temp_db.command({ "usersInfo": 1})
         userdbnames = dpath.util.values(userdicts, 'users/*/_id')
 
@@ -78,15 +80,25 @@ class Supervisor:
         usernames = [un for un in usernames if un.startswith('online_') or un.startswith('module_')]
 
         for username in usernames:
-            print("dropping", username)
+            self.logger.info("dropping user {}".format(username))
             temp_db.remove_user(username)
-            temp_db.command("dropRole", username)
+
+        # delete roles
+        roledicts = temp_db.command({ "rolesInfo": 1})
+        rolenames = dpath.util.values(roledicts, 'roles/*/role')
+
+        # only care about `online-` and `module-` users
+        rolenames = [rn for rn in rolenames if rn.startswith('online_') or rn.startswith('module_')]
+
+        for rolename in rolenames:
+            self.logger.info("dropping role {}".format(rolename))
+            temp_db.command("dropRole", rolename)
 
     def analyzer_request(self, identifier, token, action, payload):
         try:
             agent = self.agents[identifier]
         except KeyError:
-            print("no analyzer with this identifier")
+            self.logger.info("no analyzer with this identifier")
             return {'error': 'authentication failed, analyzer not on record with this identifier'}
 
         if agent.token == token:
@@ -99,7 +111,7 @@ class Supervisor:
         del self.agents[agent.identifier]
 
     def create_online_agent(self):
-        print("creating online supervisor")
+        self.logger.info("creating online supervisor")
 
         # create agent
         identifier = 'online_'+str(self._agent_id_creator())
@@ -115,7 +127,7 @@ class Supervisor:
         return credentials, agent
 
     def script_agent_done(self, agent: ModuleAgent, fut: asyncio.Future):
-        print("module agent done")
+        self.logger.info("module agent done")
         agent.teardown()
         del self.agents[agent.identifier]
 
@@ -134,24 +146,23 @@ class Supervisor:
             transition_args = {'execution_result': {
                 'temporary_coll': agent.identifier,
                 'max_action_id': agent.result_max_action_id,
-                'timespans': agent.result_timespans
+                'timespans': agent.result_timespans,    # None when direct analyzer
+                'upload_ids': agent.result_upload_ids   # None when normal analyzer
             }}
 
             self.analyzer_state.transition(agent.analyzer_id, 'executing', 'executed', transition_args)
 
     def check_for_work(self):
-        logger = logging.getLogger('supervisor')
-
         planned = self.analyzer_state.planned_analyzers()
-        logger.debug("check for work")
+        self.logger.debug("check for work")
         for analyzer in planned:
             # check for wish
             # TODO also check wish for executing analyzers
             if self.analyzer_state.check_wish(analyzer, 'cancel'):
-                logger.info("cancel analyzer {} upon request".format(analyzer['_id']))
+                self.logger.info("cancel analyzer {} upon request".format(analyzer['_id']))
                 continue
 
-            logger.info("execute analyzer {}".format(analyzer['_id']))
+            self.logger.info("execute analyzer {}".format(analyzer['_id']))
 
             # create agent
             identifier = 'module_'+str(self._agent_id_creator())
@@ -159,7 +170,7 @@ class Supervisor:
 
             agent = ModuleAgent(analyzer['_id'], identifier, token, self.core_config,
                                 analyzer['input_formats'], analyzer['input_types'], analyzer['output_types'],
-                                analyzer['command_line'], analyzer['working_dir'], analyzer['rebuild_all'],
+                                analyzer['command_line'], analyzer['working_dir'],
                                 self.core_config.supervisor_ensure_clean_repo)
 
             self.agents[agent.identifier] = agent
@@ -170,7 +181,7 @@ class Supervisor:
             # schedule for execution
             task = asyncio.ensure_future(agent.execute())
             task.add_done_callback(partial(self.script_agent_done, agent))
-            print("module agent started")
+            self.logger.info("module agent started")
 
     async def run(self):
         while True:
