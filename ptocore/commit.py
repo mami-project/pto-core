@@ -57,19 +57,44 @@ def compute_hashes(coll: Collection):
     coll.create_index('hash')
 
 
-def perform_commit(temporary_coll: Collection,
+def perform_commit(analyzer_id: str,
+                   output_types: Sequence[str],
+                   timespans,
+                   upload_ids,
+                   max_action_id: int,
+                   git_url: str,
+                   git_commit: str,
+                   temporary_coll: Collection,
                    output_coll: Collection,
                    candidates_query: dict,
+                   action_log: Collection,
                    action_id: int):
-    print("c. find candidates")
-    # 2. find all observations that exist both in the output collection and in the temporary collection
+
+    # 1. create action_log entry.
+    # note the sensor will not run downstream analyzers as long as this analyzer is in validating state.
+    action_log.insert_one({
+        '_id': action_id,
+        'action': 'analyze',
+        'output_types': output_types,
+        'timespans': timespans,
+        'upload_ids': upload_ids,
+        'max_action_id': max_action_id,
+        'analyzer_id': analyzer_id,
+        'git_url': git_url,
+        'git_commit': git_commit
+    })
+
+    # 2. create hashes for counterpart search
+    compute_hashes(temporary_coll)
+
+    # 3. find all observations that exist both in the output collection and in the temporary collection
+    print("2. find candidates")
     candidates = output_coll.find(candidates_query)
 
-    print("d. find counterparts and mark them")
-
+    # 4. find and mark all of them in the temporary collection, they will be set to valid again
+    print("3. find counterparts and mark them")
     pairs = filter(None, (find_counterpart(candidate, temporary_coll) for candidate in candidates))
 
-    # 3. mark all of them in the temporary collection, they will be set to valid again
     mark_ops = (UpdateOne({'_id': pair[1]['_id']}, {'$set': {'output_id': pair[0]['_id']}}) for pair in pairs)
 
     # unfortunately bulk_write does not accept iterators. in the mongodb docs, the server limit is 1000 ops.
@@ -77,7 +102,11 @@ def perform_commit(temporary_coll: Collection,
         print(".")
         temporary_coll.bulk_write(list(block))
 
-    # push a new action_id and valid: False to all candidates that were valid before.
+    #
+    # WRITE TO OBSERVATIONS COLLECTION STARTS FROM HERE
+    #
+
+    # 5. push a new action_id and valid: False to all candidates that were valid before.
     # later in the code this item is removed iff the candidate is still valid.
     candidates_query_valid = candidates_query.copy()
     candidates_query_valid.update({
@@ -93,9 +122,8 @@ def perform_commit(temporary_coll: Collection,
 
     print("marked false: {}".format(num_marked_false))
 
+    # 6. perform actual commit
     print("e. insert new or validate existing observations.")
-
-    # 4. commit changes into output collection.
     def create_output_ops():
         kept = 0
         inserted = 0
@@ -123,23 +151,8 @@ def perform_commit(temporary_coll: Collection,
 
         print("commit stats: deprecated(+)/undeprecated(-): {}, kept {}, added: {}".format(deprecated, kept, inserted))
 
-    print("perform critical write")
     for block in grouper(create_output_ops(), 1000):
         output_coll.bulk_write(list(block))
-
-
-def candidates_query_timespans(analyzer_id, timespans):
-    def create_timespan_subquery(timespan: Interval):
-        return {'$or': [
-            {'time': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-            {'$and': [
-                {'time.from': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
-                {'time.to': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}}
-            ]}
-        ]}
-
-    # query to find candidates to invalidate
-    return {'analyzer_id': analyzer_id, '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
 
 def commit_direct(analyzer_id: str,
@@ -152,6 +165,14 @@ def commit_direct(analyzer_id: str,
                   output_types: Sequence[str],
                   action_log: Collection,
                   abort_max_errors=100):
+    # get repository details
+    try:
+        git_url, git_commit = repomanager.get_repository_url_commit(repo_path)
+    except repomanager.RepositoryError as e:
+        raise ValidationError(None, "either working_dir is not pointing to a git repository"
+                              " or it's not possible to obtain commit and git url.",
+                              "analyzer: '{}', working_dir: '{}'.".format(analyzer_id, repo_path)) from e
+
     # get action id for each upload
     timespans = []
     for upload_id in upload_ids:
@@ -161,41 +182,25 @@ def commit_direct(analyzer_id: str,
 
         timespans.append((action_doc['meta']['start_time'], action_doc['meta']['stop_time']))
 
-
-    candidates_query = {'analyzer_id': analyzer_id, 'sources': [upload_action_id]}
-
-    # create and set action_id
-    action_id = action_id_creator()
-
-    return perform_commit(temporary_coll, output_coll, candidates_query, )
-
-
-def commit_base(analyzer_id: str,
-                repo_path: str,
-                action_id_creator: Callable[[], int],
-                timespans: Sequence[Interval],
-                max_action_id: int,
-                temporary_coll: Collection,
-                output_coll: Collection,
-                output_types: Sequence[str],
-                action_log: Collection,
-                abort_max_errors=100):
-    # get repository details
-    try:
-        git_url, git_commit = repomanager.get_repository_url_commit(repo_path)
-    except repomanager.RepositoryError as e:
-        raise ValidationError(None, "either working_dir is not pointing to a git repository"
-                              " or it's not possible to obtain commit and git url.",
-                              "analyzer: '{}', working_dir: '{}'.".format(analyzer_id, repo_path)) from e
-
     print("a. validating.")
     valid_count, errors = validate(analyzer_id, timespans, temporary_coll, output_types, abort_max_errors)
 
     if len(errors) > 0:
         return valid_count, errors, 0
 
+    # TODO: think about if this is reasonable
+    # TODO: but if the analyzer module removes input_formats we may never invalidate uploads with the removed input format
+    # TODO: maybe write a script that periodically scans for these issues
+    candidates_query = {'analyzer_id': analyzer_id, 'sources': {'$in': upload_ids}}
 
-def commit_derived(analyzer_id: str,
+    # create and set action_id
+    action_id = action_id_creator()
+
+    return perform_commit(analyzer_id, output_types, timespans, upload_ids, max_action_id, git_url, git_commit,
+                          temporary_coll, output_coll, candidates_query, action_log, action_id)
+
+
+def commit_normal(analyzer_id: str,
            repo_path: str,
            action_id_creator: Callable[[], int],
            timespans: Sequence[Interval],
@@ -228,29 +233,21 @@ def commit_derived(analyzer_id: str,
 
     temporary_coll.update_many({}, {'$set': {'action_ids': [{'id': action_id, 'valid': True}]}})
 
-    # TODO let analyzer give us the candidates query. because analyzer knows best which observations to override.
-    # TODO for example: special treatment of direct observation analyzers. (additional condition: source)
-
+    # query to find candidates to invalidate
     print("b. determine candidates to invalidate")
-    candidates_query = candidates_query_timespans(analyzer_id, timespans)
+    def create_timespan_subquery(timespan: Interval):
+        return {'$or': [
+            {'time': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+            {'$and': [
+                {'time.from': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}},
+                {'time.to': {'$type': 'date', '$gte': timespan[0], '$lte': timespan[1]}}
+            ]}
+        ]}
 
-    # create hashes
-    compute_hashes(temporary_coll)
+    candidates_query = {'analyzer_id': analyzer_id, '$or': [create_timespan_subquery(timespan) for timespan in timespans]}
 
-    # action log
-    action_log.insert_one({
-        '_id': action_id,
-        'output_types': output_types,
-        'timespans': timespans,
-        'max_action_id': max_action_id,
-        'action': 'analyze',
-        'analyzer_id': analyzer_id,
-        'git_url': git_url,
-        'git_commit': git_commit
-        # upload_id for direct analyzers
-    })
-
-    perform_commit(temporary_coll, output_coll, candidates_query, action_id)
+    perform_commit(analyzer_id, output_types, timespans, None, max_action_id, git_url, git_commit,
+                   temporary_coll, output_coll, candidates_query, action_log, action_id)
 
     print("f. done. drop temporary collection")
     # 5. finally delete collection
