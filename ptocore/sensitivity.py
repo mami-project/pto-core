@@ -6,8 +6,7 @@ from collections import OrderedDict
 import pymongo
 from pymongo.collection import Collection
 from bson.objectid import ObjectId
-
-from ptocore.timeline import Timeline
+from . import timeline
 
 Interval = Tuple[datetime, datetime]
 
@@ -24,7 +23,7 @@ def extend_hourly(interval: Interval) -> Interval:
     return start, stop
 
 def _get_timeline(actions):
-    tl = Timeline()
+    tl = timeline.Timeline()
     for action in actions:
         for timespan in action['timespans']:
             start, end = timespan
@@ -177,7 +176,7 @@ def aggregating(extend_func: Callable[[Interval], Interval],
 
     max_action_id, timespans = action_set.basic()
 
-    tl = Timeline()
+    tl = timeline.Timeline()
     for timespan in timespans:
         timespan_extended = extend_func(timespan)
         tl.add_interval(timespan_extended[0], timespan_extended[1])
@@ -185,6 +184,7 @@ def aggregating(extend_func: Callable[[Interval], Interval],
     return max_action_id, tl.intervals
 
 
-def margin(offset: float,
-           action_set: ActionSetBase):
-    pass
+def margin(offset: timedelta, action_set: ActionSetBase):
+    max_action_id, timespans = action_set.basic()
+
+    return timeline.margin(offset, timespans)

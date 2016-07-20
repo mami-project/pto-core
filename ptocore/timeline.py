@@ -86,3 +86,33 @@ class Timeline:
             ret.add_interval(a, b)
 
         return ret
+
+
+def margin(offset, timespans):
+
+    islands = []
+
+    pool = list(timespans)
+    while len(pool) > 0:
+        begin, end = pool.pop()
+
+        margin_begin = begin - offset
+        margin_end = end + offset
+
+        while True:
+            # add all others that are within offset
+            for index, interval in enumerate(pool):
+                if merge((margin_begin, margin_end), interval) is not None:
+                    begin = min(begin, interval[0])
+                    end = max(end, interval[1])
+                    del pool[index]
+                    break
+
+            if margin_begin == begin - offset and margin_end == end + offset:
+                islands.append((begin, end))
+                break
+
+            margin_begin = begin - offset
+            margin_end = end + offset
+
+    return islands
