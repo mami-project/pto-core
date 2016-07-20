@@ -204,5 +204,5 @@ def upload_request_valid(upload_id):
 
 @app.route('/upload/<upload_id>/invalid', methods=['PUT'])
 def upload_request_invalid(upload_id):
-    _add_upload_valid_request(upload_id, True)
+    _add_upload_valid_request(upload_id, False)
     return flask.jsonify({'success': 'placed a request for setting upload to invalid'})

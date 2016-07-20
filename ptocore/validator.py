@@ -33,7 +33,7 @@ class Validator:
         self._action_id_creator = idfactory.get_incrementor('action_id', create_if_missing=True)
 
     def validate_upload(self, upload_id: ObjectId, valid: bool):
-        action_doc = self.cc.action_log.find_one({'upload_id': upload_id, 'action': 'upload'})
+        action_doc = self.cc.action_log.find_one({'upload_ids': upload_id, 'action': 'upload'})
         if action_doc is None:
             print("upload doesn't exist in action_log")
             return
@@ -56,8 +56,8 @@ class Validator:
 
         action_id = self._action_id_creator()
         self.cc.metadata_coll.update_one({'_id': upload_id}, {'$set': {self.valid_name: valid}})
-        self.cc.action_log.insert_one({ "_id" : action_id, "timespans" : timespans, "upload_id" : upload_id,
-                              "action" : action, "output_formats" : output_formats })
+        self.cc.action_log.insert_one({ "_id": action_id, "timespans": timespans, "upload_ids": [upload_id],
+                              "action": action, "output_formats": output_formats })
 
     def check_for_requests(self):
         """
@@ -72,7 +72,7 @@ class Validator:
 
             if doc['action'] == 'validate_upload':
                 print("fulfil request: set valid: {} for upload_id {}".format(doc['valid'], doc['upload_id']))
-                self.validate_upload(doc['upload_id'], doc['valid'])
+                self.validate_upload(ObjectId(doc['upload_id']), doc['valid'])
 
     def check_for_uploads(self):
         """

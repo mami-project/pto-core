@@ -92,7 +92,7 @@ class ActionSetBase:
         uploads_processed = []
         for upload_id, upload_max_action_id in uploads_max_action_id.items():
             for analysis in self.output_actions:
-                if analysis['_id'] > upload_max_action_id and upload_id in analysis['upload_ids']:
+                if analysis['max_action_id'] >= upload_max_action_id and upload_id in analysis['upload_ids']:
                     uploads_processed.append(upload_id)
                     break
 
