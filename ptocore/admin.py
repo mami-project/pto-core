@@ -6,6 +6,7 @@ import flask
 from flask_cors import CORS
 from jsonschema import validate
 from pymongo import MongoClient
+from bson.objectid import ObjectId
 
 from .analyzerstate import AnalyzerState
 from .repomanager import procure_repository
@@ -30,6 +31,7 @@ analyzer_spec = {
     "input_types":      {"type": "array", "items": {"type": "string"}},
     "output_types":     {"type": "array", "items": {"type": "string"}},
     "command_line":     {"type": "array", "items": {"type": "string"}},
+    "direct":           {"type": "bool" },
   },
   "required": ["input_formats", "input_types", "output_types", "command_line"]
 }
@@ -184,3 +186,23 @@ def request_cancel(analyzer_id):
             print("admin: cancelled {} upon request".format(analyzer_id))
 
         return flask.jsonify({'success': 'requested cancel for \'{}\''.format(analyzer_id)})
+
+def _add_upload_valid_request(upload_id: ObjectId, valid: bool):
+    with get_lock():
+        cc = get_core_config()
+        cc.requests_coll.insert_one({
+            'receiver': 'validator',
+            'action': 'validate_upload',
+            'valid': valid,
+            'upload_id': upload_id
+        })
+
+@app.route('/upload/<upload_id>/valid', methods=['PUT'])
+def upload_request_valid(upload_id):
+    _add_upload_valid_request(upload_id, True)
+    return flask.jsonify({'success': 'placed a request for setting upload to valid'})
+
+@app.route('/upload/<upload_id>/invalid', methods=['PUT'])
+def upload_request_invalid(upload_id):
+    _add_upload_valid_request(upload_id, True)
+    return flask.jsonify({'success': 'placed a request for setting upload to invalid'})

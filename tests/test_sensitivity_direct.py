@@ -17,13 +17,12 @@ analyze_a = {
     '_id': 1,
     'action': 'analyze',
     'analyzer_id': 'analyzerX',
-    'git_commit': 'commit',
-    'git_url': 'url',
     'output_types': ['type0'],
     'timespans': [
         [datetime(2016, 6, 12, 0, 0), datetime(2016, 6, 13, 0, 0)]
     ],
-    'upload_ids': [ObjectId('A76670ee31e34a281d600a31')]
+    'upload_ids': [ObjectId('A76670ee31e34a281d600a31')],
+    'max_action_id': 0
 }
 
 upload_b = {
@@ -38,13 +37,12 @@ analyze_b = {
     '_id': 3,
     'action': 'analyze',
     'analyzer_id': 'analyzerX',
-    'git_commit': 'commit',
-    'git_url': 'url',
     'output_types': ['type0'],
     'timespans': [
         [datetime(2016, 6, 12, 0, 0), datetime(2016, 6, 13, 0, 0)]
     ],
-    'upload_ids': [ObjectId('B76670ee31e34a281d600a31')]
+    'upload_ids': [ObjectId('B76670ee31e34a281d600a31')],
+    'max_action_id': 2
 }
 
 mark_invalid_a = {
@@ -59,13 +57,12 @@ analyze_a_2 = {
     '_id': 5,
     'action': 'analyze',
     'analyzer_id': 'analyzerX',
-    'git_commit': 'commit',
-    'git_url': 'url',
     'output_types': ['type0'],
     'timespans': [
         [datetime(2016, 6, 12, 0, 0), datetime(2016, 6, 13, 0, 0)]
     ],
-    'upload_ids': [ObjectId('A76670ee31e34a281d600a31')]
+    'upload_ids': [ObjectId('A76670ee31e34a281d600a31')],
+    'max_action_id': 4
 }
 
 mark_valid_a = {
@@ -85,7 +82,7 @@ class TestSensitivityDirect(unittest.TestCase):
         action_set = sensitivity.ActionSetTest(input_formats=['format0'], input_types=[],
                                                input_actions=[], output_actions=[])
 
-        max_action_id, upload_ids = sensitivity.direct(action_set)
+        max_action_id, upload_ids = action_set.direct()
 
         self.assertEqual(max_action_id, -1)
         self.assertSequenceEqual(upload_ids, [])
@@ -100,7 +97,7 @@ class TestSensitivityDirect(unittest.TestCase):
         action_set = sensitivity.ActionSetTest(input_formats=['format0'], input_types=[],
                                                input_actions=input_actions, output_actions=[])
 
-        max_action_id, upload_ids = sensitivity.direct(action_set)
+        max_action_id, upload_ids = action_set.direct()
 
         self.assertEqual(max_action_id, 0)
         self.assertSequenceEqual(upload_ids, [ObjectId('A76670ee31e34a281d600a31')])
@@ -115,7 +112,7 @@ class TestSensitivityDirect(unittest.TestCase):
         action_set = sensitivity.ActionSetTest(input_formats=['format0'], input_types=[],
                                                input_actions=input_actions, output_actions=[])
 
-        max_action_id, upload_ids = sensitivity.direct(action_set)
+        max_action_id, upload_ids = action_set.direct()
 
         self.assertEqual(max_action_id, 2)
         self.assertSequenceEqual(upload_ids, [ObjectId('A76670ee31e34a281d600a31'), ObjectId('B76670ee31e34a281d600a31')])
@@ -132,7 +129,7 @@ class TestSensitivityDirect(unittest.TestCase):
         action_set = sensitivity.ActionSetTest(input_formats=['format0'], input_types=[],
                                                input_actions=input_actions, output_actions=output_actions)
 
-        max_action_id, upload_ids = sensitivity.direct(action_set)
+        max_action_id, upload_ids = action_set.direct()
 
         self.assertEqual(max_action_id, 2)
         self.assertSequenceEqual(upload_ids, [ObjectId('B76670ee31e34a281d600a31')])
@@ -149,7 +146,7 @@ class TestSensitivityDirect(unittest.TestCase):
         action_set = sensitivity.ActionSetTest(input_formats=['format0'], input_types=[],
                                                input_actions=input_actions, output_actions=output_actions)
 
-        max_action_id, upload_ids = sensitivity.direct(action_set)
+        max_action_id, upload_ids = action_set.direct()
 
         self.assertEqual(max_action_id, 3)
         self.assertSequenceEqual(upload_ids, [])
@@ -166,7 +163,7 @@ class TestSensitivityDirect(unittest.TestCase):
         action_set = sensitivity.ActionSetTest(input_formats=['format0'], input_types=[],
                                                input_actions=input_actions, output_actions=output_actions)
 
-        max_action_id, upload_ids = sensitivity.direct(action_set)
+        max_action_id, upload_ids = action_set.direct()
 
         self.assertEqual(max_action_id, 4)
         self.assertSequenceEqual(upload_ids, [ObjectId('A76670ee31e34a281d600a31')])
@@ -184,7 +181,7 @@ class TestSensitivityDirect(unittest.TestCase):
         action_set = sensitivity.ActionSetTest(input_formats=['format0'], input_types=[],
                                                input_actions=input_actions, output_actions=output_actions)
 
-        max_action_id, upload_ids = sensitivity.direct(action_set)
+        max_action_id, upload_ids = action_set.direct()
 
         self.assertEqual(max_action_id, 6)
         self.assertSequenceEqual(upload_ids, [ObjectId('A76670ee31e34a281d600a31')])

@@ -150,12 +150,14 @@ class Validator:
                 continue
 
             if exe_res['upload_ids'] is not None:
+                print("using direct commit")
                 valid_count, errors, action_id = commit_direct(
                     analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
                     exe_res['upload_ids'], exe_res['max_action_id'], temporary_coll,
                     self.cc.observations_coll, analyzer['output_types'],
                     self.cc.action_log)
             else:
+                print("using normal commit")
                 valid_count, errors, action_id = commit_normal(
                     analyzer['_id'], analyzer['working_dir'], self._action_id_creator,
                     exe_res['timespans'], exe_res['max_action_id'], temporary_coll,

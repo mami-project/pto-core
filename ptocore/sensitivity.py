@@ -23,6 +23,14 @@ def extend_hourly(interval: Interval) -> Interval:
 
     return start, stop
 
+def _get_timeline(actions):
+    tl = Timeline()
+    for action in actions:
+        for timespan in action['timespans']:
+            start, end = timespan
+            tl.add_interval(start, end)
+
+    return tl
 
 class ActionSetBase:
     def __init__(self,
@@ -31,6 +39,8 @@ class ActionSetBase:
         self._input_types = input_types
         self._input_formats = input_formats
 
+        # input_actions fields: _id, action, upload_ids, timespans
+        # output_actions fields: _id, upload_ids, timespans
         self.input_actions = []
         self.input_max_action_id = -1
         self.output_actions = []
@@ -42,8 +52,59 @@ class ActionSetBase:
     def get_max_action_id(self):
         return max(self.input_max_action_id, self.output_max_action_id)
 
-    def has_unprocessed_data(self):
-        return self.input_max_action_id > self.output_max_action_id
+    def has_unprocessed_data(self, is_direct: bool) -> bool:
+        if is_direct:
+            max_action_id, uploads_unprocessed = self.direct()
+            return len(uploads_unprocessed) > 0
+        else:
+            max_action_id, timespans = self.basic()
+            return len(timespans) > 0
+
+    def direct(self) -> Sequence[Tuple[ObjectId, int]]:
+        if not self.is_direct_allowed():
+            raise ValueError("Cannot use direct sensitivity for basic/dervied analyzer modules."
+                             "Check that input_types is an empty list.")
+
+        # TODO what to do with marked_valid and marked_invalid?
+        # a) The validator itself can do that without invoking the analyzer. -> a lot of code changes :-(
+        # b) 1. for each upload_id discard all input actions except the one with the highest _id
+        #    2. discard each output action that is smaller than the max input action
+        # c) for each upload_id determine if it has been analyzed:
+        #   -
+        #
+        # Upon change of analyzer code, all previous invocations of analyzer module don't show up anymore in output_actions already.
+        #
+
+        # get the maximum action_id (last change) and minimum action_id (upload) for each upload
+        uploads_max_action_id = OrderedDict()
+        uploads_min_action_id = OrderedDict()
+        for action in self.input_actions:
+            # the list upload has exactly one item
+            uid = action['upload_ids'][0]
+            aid = action['_id']
+            if uploads_max_action_id.get(uid, -1) < aid:
+                uploads_max_action_id[uid] = aid
+
+            if action['action'] == 'upload':
+                uploads_min_action_id[uid] = aid
+
+        # for each upload determine if it has been analyzed
+        uploads_processed = []
+        for upload_id, upload_max_action_id in uploads_max_action_id.items():
+            for analysis in self.output_actions:
+                if analysis['_id'] > upload_max_action_id and upload_id in analysis['upload_ids']:
+                    uploads_processed.append(upload_id)
+                    break
+
+        uploads_unprocessed = [upload_id for upload_id in uploads_max_action_id if upload_id not in uploads_processed]
+
+        return self.get_max_action_id(), uploads_unprocessed
+
+    def basic(self) -> Tuple[int, Sequence[Interval]]:
+        input_tl = _get_timeline(self.input_actions)
+        output_tl = _get_timeline(self.output_actions)
+
+        return self.get_max_action_id(), (input_tl - output_tl).intervals
 
 
 class ActionSetTest(ActionSetBase):
@@ -62,7 +123,7 @@ class ActionSetTest(ActionSetBase):
 
         self.output_actions = output_actions
         if len(output_actions) > 0:
-            self.output_max_action_id = max(action['_id'] for action in output_actions)
+            self.output_max_action_id = max(action['max_action_id'] for action in output_actions)
         else:
             self.output_max_action_id = -1
 
@@ -88,14 +149,14 @@ class ActionSetMongo(ActionSetBase):
             ]
         }
 
-        result = action_log.find(query, {'timespans': 1, 'upload_ids': 1}).sort([('_id', pymongo.DESCENDING)])
+        result = action_log.find(query, {'action': 1, 'timespans': 1, 'upload_ids': 1}).sort([('_id', pymongo.DESCENDING)])
         self.input_actions = list(result)
 
         self.input_max_action_id = self.input_actions[0]['_id'] if len(self.input_actions) > 0 else -1
 
     def _load_output_actions(self, analyzer_id, git_url, git_commit, action_log: Collection):
         query = {'analyzer_id': analyzer_id}
-        proj = {'_id': 1, 'git_url': 1, 'git_commit': 1, 'timespans': 1, 'upload_ids': 1}
+        proj = {'_id': 1, 'git_url': 1, 'git_commit': 1, 'timespans': 1, 'upload_ids': 1, 'max_action_id': 1}
 
         def same_code(doc):
             return doc['git_url'] == git_url and doc['git_commit'] == git_commit
@@ -111,68 +172,10 @@ class ActionSetMongo(ActionSetBase):
         self.output_max_action_id = self.output_actions[0]['max_action_id'] if len(self.output_actions) > 0 else -1
 
 
-def direct(action_set: ActionSetBase) -> Sequence[Tuple[ObjectId, int]]:
-    if not action_set.is_direct_allowed():
-        raise ValueError("Cannot use direct sensitivity for basic/dervied analyzer modules."
-                         "Check that input_types is an empty list.")
-
-    # TODO what to do with marked_valid and marked_invalid?
-    # a) The validator itself can do that without invoking the analyzer. -> a lot of code changes :-(
-    # b) 1. for each upload_id discard all input actions except the one with the highest _id
-    #    2. discard each output action that is smaller than the max input action
-    # c) for each upload_id determine if it has been analyzed:
-    #   -
-    #
-    # Upon change of analyzer code, all previous invocations of analyzer module don't show up anymore in output_actions already.
-    #
-
-    # get the maximum action_id (last change) and minimum action_id (upload) for each upload
-    uploads_max_action_id = OrderedDict()
-    uploads_min_action_id = OrderedDict()
-    for action in action_set.input_actions:
-        # the list upload has exactly one item
-        uid = action['upload_ids'][0]
-        aid = action['_id']
-        if uploads_max_action_id.get(uid, -1) < aid:
-            uploads_max_action_id[uid] = aid
-
-        if action['action'] == 'upload':
-            uploads_min_action_id[uid] = aid
-
-    # for each upload determine if it has been analyzed
-    uploads_processed = []
-    for upload_id, upload_max_action_id in uploads_max_action_id.items():
-        for analysis in action_set.output_actions:
-            if analysis['_id'] > upload_max_action_id and upload_id in analysis['upload_ids']:
-                uploads_processed.append(upload_id)
-                break
-
-    uploads_unprocessed = [upload_id for upload_id in uploads_max_action_id if upload_id not in uploads_processed]
-
-    return action_set.get_max_action_id(), uploads_unprocessed
-
-
-def _get_timeline(actions):
-    tl = Timeline()
-    for action in actions:
-        for timespan in action['timespans']:
-            start, end = timespan
-            tl.add_interval(start, end)
-
-    return tl
-
-
-def basic(action_set: ActionSetBase) -> Tuple[int, Sequence[Interval]]:
-    input_tl = _get_timeline(action_set.input_actions)
-    output_tl = _get_timeline(action_set.output_actions)
-
-    return action_set.get_max_action_id(), (input_tl - output_tl).intervals
-
-
 def aggregating(extend_func: Callable[[Interval], Interval],
                 action_set: ActionSetBase) -> Tuple[int, Sequence[Interval]]:
 
-    max_action_id, timespans = basic(action_set)
+    max_action_id, timespans = action_set.basic()
 
     tl = Timeline()
     for timespan in timespans:

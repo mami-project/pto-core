@@ -52,12 +52,11 @@ class Sensor:
             action_set = sensitivity.ActionSetMongo(analyzer['_id'], git_url, git_commit, analyzer['input_formats'],
                                                     analyzer['input_types'], self.action_log)
 
-            logger.debug('action set: {}, {}'.format(action_set.input_actions, action_set.output_actions))
+            logger.debug('input_action_set: {}'.format(action_set.input_actions))
+            logger.debug('output_action_set: {}'.format(action_set.output_actions))
 
-            # find out if code has changed since last run and decide if the analyzer
-            # has to rebuild all observations
-
-            if action_set.has_unprocessed_data():
+            if action_set.has_unprocessed_data(analyzer['direct']):
+                logger.info('order execution of {}'.format(analyzer['_id']))
                 # okay let's do this. change state of analyzer to planned.
                 self.analyzer_state.transition(analyzer['_id'], 'sensing', 'planned')
 

@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Sequence, Tuple, Callable
 from hashlib import sha1
+import logging
 
 from pymongo.collection import Collection
 from pymongo.operations import UpdateOne, InsertOne
@@ -155,6 +156,17 @@ def perform_commit(analyzer_id: str,
         output_coll.bulk_write(list(block))
 
 
+def upload_timespans_from_action_log(upload_ids: Sequence[ObjectId], action_log: Collection) -> Sequence[Interval]:
+    timespans = []
+    for upload_id in upload_ids:
+        action_doc = action_log.find_one({'action': 'upload', 'upload_ids': [upload_id]})
+        if action_doc is None:
+            raise ValidationError(None, "cannot find the action_id of given upload_id", repr(upload_id))
+
+        timespans.append(action_doc['timespans'][0])
+    return timespans
+
+
 def commit_direct(analyzer_id: str,
                   repo_path: str,
                   action_id_creator: Callable[[], int],
@@ -174,13 +186,7 @@ def commit_direct(analyzer_id: str,
                               "analyzer: '{}', working_dir: '{}'.".format(analyzer_id, repo_path)) from e
 
     # get action id for each upload
-    timespans = []
-    for upload_id in upload_ids:
-        action_doc = action_log.find_one({'action': 'upload', 'upload_ids': [upload_id]})
-        if action_doc is None:
-            raise ValidationError(None, "cannot find the action_id of given upload_id", repr(upload_id))
-
-        timespans.append((action_doc['meta']['start_time'], action_doc['meta']['stop_time']))
+    timespans = upload_timespans_from_action_log(upload_ids, action_log)
 
     print("a. validating.")
     valid_count, errors = validate(analyzer_id, timespans, temporary_coll, output_types, abort_max_errors)
@@ -196,8 +202,14 @@ def commit_direct(analyzer_id: str,
     # create and set action_id
     action_id = action_id_creator()
 
-    return perform_commit(analyzer_id, output_types, timespans, upload_ids, max_action_id, git_url, git_commit,
+    perform_commit(analyzer_id, output_types, timespans, upload_ids, max_action_id, git_url, git_commit,
                           temporary_coll, output_coll, candidates_query, action_log, action_id)
+
+    print("f. done. drop temporary collection")
+    # 5. finally delete collection
+    temporary_coll.drop()
+
+    return valid_count, [], action_id
 
 
 def commit_normal(analyzer_id: str,
@@ -227,9 +239,6 @@ def commit_normal(analyzer_id: str,
 
     # create and set action_id
     action_id = action_id_creator()
-
-    if not isinstance(action_id, int) or action_id < 0:
-        return 0, [(None, "action id has to be a non-negative integer.")], action_id
 
     temporary_coll.update_many({}, {'$set': {'action_ids': [{'id': action_id, 'valid': True}]}})
 
