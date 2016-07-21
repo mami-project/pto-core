@@ -7,7 +7,7 @@ from pymongo.collection import Collection
 
 VALIDATION_COMPARE_FIELDS = {'conditions', 'time', 'path', 'value', 'sources', 'analyzer_id'}
 
-VALIDATION_INPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'_id'}
+VALIDATION_INPUT_FIELDS = {'conditions', 'time', 'path', 'value', 'sources', '_id'}
 
 VALIDATION_OUTPUT_FIELDS = VALIDATION_COMPARE_FIELDS | {'action_ids', 'valid'}
 
@@ -70,10 +70,6 @@ def validate(
             # check that it has the correct fieldnames
             check(doc.keys() == VALIDATION_INPUT_FIELDS, obsid, 'wrong fields', 'expected {}, got {}'.format(VALIDATION_INPUT_FIELDS, doc.keys()))
 
-            # check that analyzer id is correct
-            check(doc['analyzer_id'] == analyzer_id, obsid, 'wrong analyzer id',
-                  'expected {}, got {}'.format(analyzer_id, doc['analyzer_id']))
-
             # check that conditions are defined in output_types
             conditions = doc['conditions']
             check(all(condition in output_types for condition in conditions), obsid,
@@ -91,8 +87,9 @@ def validate(
             # TODO
 
             # check that sources exist
-            check(isinstance(doc['sources'], list), obsid, 'sources field is not a list')
-            # TODO in case of direct analyzer make sure that the field sources only contains one element set in the execution_result
+            # TODO and that either 'obs' or 'upl' or both exists with a list with length > 0
+            check(isinstance(doc['sources'], dict), obsid, 'sources field is not a dict')
+            # TODO in case of direct analyzer make sure that the field sources only contains the elements declared in the execution_result
 
             # check that value is valid
             # TODO

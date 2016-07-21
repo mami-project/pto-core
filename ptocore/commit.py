@@ -156,15 +156,17 @@ def perform_commit(analyzer_id: str,
         output_coll.bulk_write(list(block))
 
 
-def upload_timespans_from_action_log(upload_ids: Sequence[ObjectId], action_log: Collection) -> Sequence[Interval]:
+def action_ids_timespans_from_uploads(upload_ids: Sequence[ObjectId], action_log: Collection) -> Tuple[Sequence[int], Sequence[Interval]]:
     timespans = []
+    action_ids = []
     for upload_id in upload_ids:
         action_doc = action_log.find_one({'action': 'upload', 'upload_ids': [upload_id]})
         if action_doc is None:
             raise ValidationError(None, "cannot find the action_id of given upload_id", repr(upload_id))
 
         timespans.append(action_doc['timespans'][0])
-    return timespans
+        action_ids.append(action_doc['_id'])
+    return action_ids, timespans
 
 
 def commit_direct(analyzer_id: str,
@@ -186,10 +188,10 @@ def commit_direct(analyzer_id: str,
                               "analyzer: '{}', working_dir: '{}'.".format(analyzer_id, repo_path)) from e
 
     # get action id for each upload
-    timespans = upload_timespans_from_action_log(upload_ids, action_log)
+    upload_action_ids, upload_timespans = action_ids_timespans_from_uploads(upload_ids, action_log)
 
     print("a. validating.")
-    valid_count, errors = validate(analyzer_id, timespans, temporary_coll, output_types, abort_max_errors)
+    valid_count, errors = validate(analyzer_id, upload_timespans, temporary_coll, output_types, abort_max_errors)
 
     if len(errors) > 0:
         return valid_count, errors, 0
@@ -197,12 +199,14 @@ def commit_direct(analyzer_id: str,
     # TODO: think about if this is reasonable
     # TODO: but if the analyzer module removes input_formats we may never invalidate uploads with the removed input format
     # TODO: maybe write a script that periodically scans for these issues
-    candidates_query = {'analyzer_id': analyzer_id, 'sources': {'$in': upload_ids}}
+    candidates_query = {'analyzer_id': analyzer_id, 'sources.upl': {'$in': upload_action_ids}}
 
     # create and set action_id
     action_id = action_id_creator()
 
-    perform_commit(analyzer_id, output_types, timespans, upload_ids, max_action_id, git_url, git_commit,
+    temporary_coll.update_many({}, {'$set': {'analyzer_id': analyzer_id, 'action_ids': [{'id': action_id, 'valid': True}]}})
+
+    perform_commit(analyzer_id, output_types, upload_timespans, upload_ids, max_action_id, git_url, git_commit,
                           temporary_coll, output_coll, candidates_query, action_log, action_id)
 
     print("f. done. drop temporary collection")
@@ -240,7 +244,7 @@ def commit_normal(analyzer_id: str,
     # create and set action_id
     action_id = action_id_creator()
 
-    temporary_coll.update_many({}, {'$set': {'action_ids': [{'id': action_id, 'valid': True}]}})
+    temporary_coll.update_many({}, {'$set': {'analyzer_id': analyzer_id, 'action_ids': [{'id': action_id, 'valid': True}]}})
 
     # query to find candidates to invalidate
     print("b. determine candidates to invalidate")
