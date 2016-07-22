@@ -39,9 +39,10 @@ class ActionSetBase:
         self._input_formats = input_formats
 
         # input_actions fields: _id, action, upload_ids, timespans
-        # output_actions fields: _id, upload_ids, timespans
         self.input_actions = []
         self.input_max_action_id = -1
+
+        # output_actions fields: _id, upload_ids, timespans
         self.output_actions = []
         self.output_max_action_id = -1
 
@@ -100,10 +101,26 @@ class ActionSetBase:
         return self.get_max_action_id(), uploads_unprocessed
 
     def basic(self) -> Tuple[int, Sequence[Interval]]:
-        input_tl = _get_timeline(self.input_actions)
-        output_tl = _get_timeline(self.output_actions)
 
-        return self.get_max_action_id(), (input_tl - output_tl).intervals
+        unsorted_actions = []
+        for action in self.input_actions:
+            unsorted_actions.append((True, action))
+
+        for action in self.output_actions:
+            unsorted_actions.append((False, action))
+
+        sorted_actions = sorted(unsorted_actions, key=lambda action: action[1]['_id'])
+
+        todo_tl = timeline.Timeline()
+        for to_add, action in sorted_actions:
+            for timespan in action['timespans']:
+                start, end = timespan
+                if to_add:
+                    todo_tl.add_interval(start, end)
+                else:
+                    todo_tl.remove_interval(start, end)
+
+        return self.get_max_action_id(), todo_tl.intervals
 
 
 class ActionSetTest(ActionSetBase):
@@ -187,4 +204,4 @@ def aggregating(extend_func: Callable[[Interval], Interval],
 def margin(offset: timedelta, action_set: ActionSetBase):
     max_action_id, timespans = action_set.basic()
 
-    return timeline.margin(offset, timespans)
+    return max_action_id, timeline.margin(offset, timespans)

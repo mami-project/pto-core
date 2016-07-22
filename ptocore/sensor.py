@@ -30,7 +30,7 @@ class Sensor:
                 logger.info("cancelled {} upon request".format(analyzer['_id']))
                 continue
 
-            logger.debug("check situation for {}: input_types={}, input_formats={}"
+            logger.debug("check situation for {}: input_formats={}, input_types={}"
                          .format(analyzer['_id'],analyzer['input_formats'], analyzer['input_types']))
             # check types
             blocked_types = self.analyzer_state.blocked_types()
@@ -52,6 +52,8 @@ class Sensor:
             action_set = sensitivity.ActionSetMongo(analyzer['_id'], git_url, git_commit, analyzer['input_formats'],
                                                     analyzer['input_types'], self.action_log)
 
+            logger.debug('git url: {}'.format(git_url))
+            logger.debug('git commit: {}'.format(git_commit))
             logger.debug('input_action_set: {}'.format(action_set.input_actions))
             logger.debug('output_action_set: {}'.format(action_set.output_actions))
 

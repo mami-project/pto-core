@@ -31,7 +31,7 @@ analyzer_spec = {
     "input_types":      {"type": "array", "items": {"type": "string"}},
     "output_types":     {"type": "array", "items": {"type": "string"}},
     "command_line":     {"type": "array", "items": {"type": "string"}},
-    "direct":           {"type": "bool" },
+    "direct":           {"type": "boolean" },
   },
   "required": ["input_formats", "input_types", "output_types", "command_line"]
 }
@@ -83,8 +83,9 @@ def list_analyzers():
     for doc in cursor:
         print(doc)
         record = dict(doc)
-        if 'upload_ids' in record['execution_result']:
-            record['execution_result']['upload_ids'] = [str(x) for x in record['execution_result']['upload_ids']]
+        if 'execution_result' in record:
+            if 'upload_ids' in record['execution_result']:
+                record['execution_result']['upload_ids'] = [str(x) for x in record['execution_result']['upload_ids']]
         records.append(record)
     return flask.jsonify(records)
 
@@ -117,7 +118,7 @@ def request_create(analyzer_id):
         repo_path = os.path.join(cc.admin_base_repo_path, analyzer_id)
 
         analyzer_state.create_analyzer(analyzer_id, spec['input_formats'], spec['input_types'],
-                                   spec['output_types'], spec['command_line'], repo_path)
+                                   spec['output_types'], spec['command_line'], repo_path, spec['direct'])
 
         return flask.jsonify({'success': 'created'})
 
@@ -141,8 +142,12 @@ def request_setrepo(analyzer_id):
         spec = procure_repository(cc.admin_base_repo_path, analyzer_id, repo_url, repo_commit)
         validate(spec, analyzer_spec)
 
-        analyzer_state.update_analyzer(analyzer_id, spec['input_formats'], spec['input_types'],
-                                       spec['output_types'], spec['command_line'])
+        analyzer_state.update_analyzer(analyzer_id,
+                                       input_formats=spec['input_formats'],
+                                       input_types=spec['input_types'],
+                                       output_types=spec['output_types'],
+                                       command_line=spec['command_line'],
+                                       direct=spec['direct'])
 
         return flask.jsonify({'success': 'repo updated'})
 

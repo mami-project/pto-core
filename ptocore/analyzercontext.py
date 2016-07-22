@@ -13,7 +13,7 @@ from warnings import warn
 from pymongo import MongoClient
 
 from .jsonprotocol import JsonProtocol
-from . import validator
+from . import validation
 from . import sensitivity
 
 Interval = Tuple[datetime, datetime]
@@ -305,4 +305,4 @@ class AnalyzerContext:
         return self._distributed_executor
 
     def validate(self, timespans: Sequence[Interval], output_types: Sequence[str], abort_max_errors=100):
-        return validator.validate(self.analyzer_id, timespans, self.temporary_coll, output_types, abort_max_errors)
+        return validation.validate(self.analyzer_id, timespans, self.temporary_coll, output_types, abort_max_errors)

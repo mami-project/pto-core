@@ -99,7 +99,7 @@ class AnalyzerState:
         """
         return set(chain.from_iterable(doc['output_types'] for doc in self.running_analyzers()))
 
-    def create_analyzer(self, analyzer_id, input_formats, input_types, output_types, command_line, working_dir):
+    def create_analyzer(self, analyzer_id, input_formats, input_types, output_types, command_line, working_dir, direct):
         """
         :raises pymongo.DuplicateKeyError if analyzer already exists
         """
@@ -112,12 +112,14 @@ class AnalyzerState:
             'command_line': command_line,
             'working_dir': working_dir,
             'wish': None,
-            'error': None
+            'error': None,
+            'direct': direct
         }
 
         self.analyzers_coll.insert_one(doc)
 
-    def update_analyzer(self, analyzer_id, input_formats=None, input_types=None, output_types=None, command_line=None):
+    def update_analyzer(self, analyzer_id, input_formats=None, input_types=None, output_types=None, command_line=None,
+                        direct=None):
         if not self[analyzer_id]['state'] == 'disabled':
             raise WrongState("updating analyzer only allowed in disabled state.")
 
@@ -130,6 +132,8 @@ class AnalyzerState:
             query['output_types'] = output_types
         if command_line is not None:
             query['command_line'] = command_line
+        if direct is not None:
+            query['direct'] = direct
 
         self.analyzers_coll.update_one({'_id': analyzer_id}, {'$set': query})
 
