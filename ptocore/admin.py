@@ -84,7 +84,7 @@ def list_analyzers():
         print(doc)
         record = dict(doc)
         if 'execution_result' in record:
-            if 'upload_ids' in record['execution_result']:
+            if 'upload_ids' in record['execution_result'] and record['execution_result']['upload_ids'] is not None:
                 record['execution_result']['upload_ids'] = [str(x) for x in record['execution_result']['upload_ids']]
         records.append(record)
     return flask.jsonify(records)
