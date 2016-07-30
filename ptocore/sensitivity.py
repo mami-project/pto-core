@@ -188,7 +188,7 @@ class ActionSetMongo(ActionSetBase):
         self.output_max_action_id = self.output_actions[0]['max_action_id'] if len(self.output_actions) > 0 else -1
 
 
-def aggregating(extend_func: Callable[[Interval], Interval],
+def extend(extend_func: Callable[[Interval], Interval],
                 action_set: ActionSetBase) -> Tuple[int, Sequence[Interval]]:
 
     max_action_id, timespans = action_set.basic()
