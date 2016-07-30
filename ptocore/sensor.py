@@ -11,11 +11,27 @@ from . import repomanager
 
 
 class Sensor:
+    """
+    The sensor's main task is to scan the action log and determine if there is unprocessed data for an
+    analyzer module.
+
+    Call :func:`check` periodically to perform a scan for all analyzer modules.
+    """
+
     def __init__(self, analyzers_coll: Collection, action_log: Collection):
         self.analyzer_state = AnalyzerState('sensor', analyzers_coll)
         self.action_log = action_log
 
     def check(self):
+        """
+        Call this function periodically.
+
+        It performs the following tasks for each analyzer module:
+        1. check if there is a wish to disable or cancel the analyzer.
+        2. check that there are no other analyzer module is currently running that
+           read or writes the same types of observations.
+        3. scan the action log and determine if there is unprocessed data.
+        """
         logger = logging.getLogger('sensor')
 
         logger.info("check for work")

@@ -2,6 +2,10 @@ import asyncio
 import json
 
 class JsonProtocol(asyncio.Protocol):
+    """
+    Implements asyncio's Protocol pattern for transferring data in the form of line-separated json-encoded
+    messages.
+    """
     MAX_BUFSIZE = 1024*1024*20
 
     def connection_made(self, transport):

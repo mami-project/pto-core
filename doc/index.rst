@@ -6,6 +6,8 @@
 Welcome to pto-core's documentation!
 ====================================
 
+A quick intro is found in ``README.md`` in the root directory of the package.
+
 Contents:
 
 .. toctree::

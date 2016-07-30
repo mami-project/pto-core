@@ -21,7 +21,16 @@ pattern_ip4 = re.compile(r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:
 
 
 class Validator:
+    """
+    Validates and commits output of analyzer modules into the observatory
+    and scans the uploads collection for new uploads and the requests collection for validity change requests to
+    be inserted in the action_log.
+    """
     def __init__(self, core_config: CoreConfig):
+        """
+        Initialises the validator with the given configuration.
+        :param core_config: Configuration storage
+        """
         self.cc = core_config
         self.analyzer_state = AnalyzerState('validator', core_config.analyzers_coll)
 
@@ -33,6 +42,11 @@ class Validator:
         self._action_id_creator = idfactory.get_incrementor('action_id', create_if_missing=True)
 
     def validate_upload(self, upload_id: ObjectId, valid: bool):
+        """
+        Inserts an action 'marked_valid' or 'marked_invalid' into the action log.
+        :param upload_id: The upload_id for which to add an action.
+        :param valid: Whether the upload should be marked valid (true) or invalid (false).
+        """
         action_doc = self.cc.action_log.find_one({'upload_ids': upload_id, 'action': 'upload'})
         if action_doc is None:
             print("upload doesn't exist in action_log")
@@ -61,7 +75,7 @@ class Validator:
 
     def check_for_requests(self):
         """
-        Check for requests to change valid state of an upload.
+        Check the requests collection for orders to change the validity of an upload.
         """
         while True:
             doc = self.cc.requests_coll.find_one_and_delete(
@@ -76,7 +90,7 @@ class Validator:
 
     def check_for_uploads(self):
         """
-        Assign action_id to every completed upload
+        Assign a new action_id to every recently completed upload
         """
 
         def set_action_id_ops() -> Sequence[Tuple[UpdateOne, InsertOne]]:
@@ -123,6 +137,11 @@ class Validator:
 
 
     def check_for_analyzers(self):
+        """
+        Scans the analyzers collection for analyzer modules that were executed and performs validation on their
+        generated observations. If they are ok, the observations are committed to the observatory and a new action is
+        inserted into the action_log.
+        """
         executed = self.analyzer_state.executed_analyzers()
         for analyzer in executed:
             # check for wish
@@ -176,6 +195,9 @@ class Validator:
 
 
     def check_for_work(self):
+        """
+        Convenience function to perform all operations in one go. Periodically call this function.
+        """
         print("validator: check for work")
         self.check_for_analyzers()
         self.check_for_uploads()

@@ -3,14 +3,13 @@ import json
 import traceback
 import argparse
 import logging
+from typing import Tuple
 
 import os
 from functools import partial
-from pymongo.database import Database
-from pymongo.collection import Collection
 import dpath.util
 
-from .agent import OnlineAgent, ModuleAgent
+from .agent import AgentBase, OnlineAgent, ModuleAgent
 from .analyzerstate import AnalyzerState
 from .jsonprotocol import JsonProtocol
 from .mongoutils import AutoIncrementFactory
@@ -18,6 +17,9 @@ from .coreconfig import CoreConfig
 
 
 class SupervisorServer(JsonProtocol):
+    """
+    Adapter class for asyncio's protocol implementing the server side.
+    """
     def __init__(self, supervisor):
         self.supervisor = supervisor
 
@@ -35,19 +37,30 @@ class SupervisorServer(JsonProtocol):
             self.send({'error': 'request is missing one or more fields: {token, identifier, action, payload}'})
             return
 
-        ans = self.supervisor.analyzer_request(identifier, token, action, payload)
+        ans = self.supervisor._analyzer_request(identifier, token, action, payload)
         self.send(ans)
 
 
 class Supervisor:
-    def __init__(self, core_config: CoreConfig, loop=None):
+    """
+    Manages the execution of analyzer modules. Each execution is supervised by an agent :class:`.agent.AgentBase`.
+
+    First the workspace in mongodb is cleaned (deleting remnant temporary users
+    and collections) and then the supervisor server :class:`.SupervisorServer` is created.
+
+    Run the server by calling the coroutine :func:`run`.
+
+    :param core_config: Configuration storage
+    :param loop: The event loop to run the server or None if the default event loop should be used.
+    """
+    def __init__(self, core_config: CoreConfig, loop: asyncio.AbstractEventLoop=None):
         self.loop = loop or asyncio.get_event_loop()
         self.logger = logging.getLogger('supervisor')
 
         self.core_config = core_config
 
         # delete all users starting with `module-` or `online-` in their name
-        self.delete_temp_users()
+        self._delete_temp_users()
 
         # the supervisor is the only component generating agent_ids, therefore create_if_missing=True is not a problem.
         idfactory = AutoIncrementFactory(self.core_config.idfactory_coll)
@@ -64,7 +77,11 @@ class Supervisor:
                                               port=self.core_config.supervisor_port)
         self.server = self.loop.run_until_complete(server_coro)
 
-    def delete_temp_users(self):
+    def _delete_temp_users(self):
+        """
+        Deletes all remnant users and roles in the temporary database starting with module_ and online_.
+        Called at startup of supervisor.
+        """
         # delete existing users and roles attached to this supervisor
         temp_db = self.core_config.temporary_db
 
@@ -94,7 +111,15 @@ class Supervisor:
             self.logger.info("dropping role {}".format(rolename))
             temp_db.command("dropRole", rolename)
 
-    def analyzer_request(self, identifier, token, action, payload):
+    def _analyzer_request(self, identifier: str, token: str, action: str, payload: dict) -> dict:
+        """
+        Dispatches an incoming analyzer request to the responsible agent.
+        :param identifier: Username of the module or online analyzer.
+        :param token: Authentication token.
+        :param action: Request parameter interpreted by agent.
+        :param payload: Request parameter interpreted by agent.
+        :return: Response message
+        """
         try:
             agent = self.agents[identifier]
         except KeyError:
@@ -106,11 +131,19 @@ class Supervisor:
         else:
             return {'error': 'authentication failed, token incorrect'}
 
-    def shutdown_online_agent(self, agent):
+    def shutdown_online_agent(self, agent: AgentBase):
+        """
+        Withdraw access to the observatory and delete agent.
+        """
         agent.teardown()
         del self.agents[agent.identifier]
 
-    def create_online_agent(self):
+    def create_online_agent(self) -> Tuple[dict, OnlineAgent]:
+        """
+        Create an online agent and return credentials for use with :class:`.analyzercontext.AnalyzerContext`
+        :return: A two-tuple consisting of credentials (a dict with the keys 'identifier', 'token', 'host', 'port')
+        and a reference to the responsible agent.
+        """
         self.logger.info("creating online supervisor")
 
         # create agent
@@ -126,7 +159,11 @@ class Supervisor:
 
         return credentials, agent
 
-    def script_agent_done(self, agent: ModuleAgent, fut: asyncio.Future):
+    def _script_agent_done(self, agent: ModuleAgent, fut: asyncio.Future):
+        """
+        Future callback that checks if any errors happened while executing the analyzer module and if no errors were
+        encountered passes the analyzer module to the validator.
+        """
         self.logger.info("module agent done")
         agent.teardown()
         del self.agents[agent.identifier]
@@ -153,6 +190,9 @@ class Supervisor:
             self.analyzer_state.transition(agent.analyzer_id, 'executing', 'executed', transition_args)
 
     def check_for_work(self):
+        """
+        Scans the analyzers collection for planned analyzers and executes them.
+        """
         planned = self.analyzer_state.planned_analyzers()
         self.logger.debug("check for work")
         for analyzer in planned:
@@ -180,10 +220,13 @@ class Supervisor:
 
             # schedule for execution
             task = asyncio.ensure_future(agent.execute())
-            task.add_done_callback(partial(self.script_agent_done, agent))
+            task.add_done_callback(partial(self._script_agent_done, agent))
             self.logger.info("module agent started")
 
     async def run(self):
+        """
+        Convenience coroutine to run the supervisor.
+        """
         while True:
             self.check_for_work()
             await asyncio.sleep(4)

@@ -26,15 +26,39 @@ class AgentError(Exception):
 class AnalyzerError(Exception):
     pass
 
+
 class AgentLoggerAdapter(logging.LoggerAdapter):
     def process(self, msg, kwargs):
         return '[%s] %s' % (self.extra['analyzer_id'], msg), kwargs
 
+
 class AgentBase:
-    # TODO: check mongo return values & exceptions
-    def __init__(self, identifier, token, core_config: CoreConfig, analyzer_id: str,
-                 input_formats: Sequence[str], input_types: Sequence[str], output_types: Sequence[str],
-                 git_url: str, git_commit: str):
+    """
+    Base class provides utility functions for its derived classes such as creating users and temporary
+    collections as well as answering analyzer module's requests.
+    Do not instantiate directly, use :class:`OnlineAgent` and :class:`ModuleAgent`.
+
+    :param identifier: Username of the module or online analyzer.
+    :param token: Authentication token.
+    :param core_config: Configuration storage
+    :param analyzer_id: Unique identifier of the analyzer module.
+    :param input_formats: A list of raw data formats that the analyzer module will read.
+    :param input_types: A list of observation types that the analyzer module will read.
+    :param output_types: A list of observation types that the analyzer module will write.
+    :param git_url: The url of the git repository of the analyzer module.
+    :param git_commit: The commit to run the analyzer module with.
+    """
+
+    def __init__(self,
+                 identifier: str,
+                 token: str,
+                 core_config: CoreConfig,
+                 analyzer_id: str,
+                 input_formats: Sequence[str],
+                 input_types: Sequence[str],
+                 output_types: Sequence[str],
+                 git_url: str,
+                 git_commit: str):
 
         self.logger = AgentLoggerAdapter(logging.getLogger("ptocore.supervisor.agent"), {'analyzer_id': analyzer_id})
         self.analyzer_id = analyzer_id
@@ -59,6 +83,12 @@ class AgentBase:
         self.stack = []
 
     def _create_user(self):
+        """
+        Creates the MongoDB user and role to access the observations, core, uploads databases as well as
+        the temporary collection where the analyzer module should store its results.
+
+        Put code here if you want to provide more services that require authentication (e.g. spark with auth on).
+        """
         self.stack.append(self._delete_user)
 
         cc = self.core_config
@@ -84,6 +114,9 @@ class AgentBase:
         self.logger.info("user created")
 
     def _delete_user(self):
+        """
+        Deletes the MongoDB user and role previously created in :func:`_create_user`.
+        """
         cc = self.core_config
         cc.temporary_db.remove_user(self.identifier)
         cc.temporary_db.command("dropRole", self.identifier)
@@ -92,6 +125,9 @@ class AgentBase:
         self.logger.info("user deleted")
 
     def _create_collection(self, delete_after=True):
+        """
+        Creates the temporary collection where the analyzer module should store its results.
+        """
         cc = self.core_config
         cc.temporary_db.create_collection(self.identifier)
 
@@ -101,6 +137,9 @@ class AgentBase:
 
 
     def _delete_collection(self):
+        """
+        Delete the collection previously created in :func:`_create_collection`.
+        """
         cc = self.core_config
         cc.temporary_db.drop_collection(self.identifier)
 
@@ -108,6 +147,9 @@ class AgentBase:
         self.logger.info("collection deleted")
 
     def _cleanup(self):
+        """
+        Call cleanup functions in the reverse order than they were added.
+        """
         for func in reversed(self.stack):
             try:
                 func()
@@ -116,7 +158,16 @@ class AgentBase:
 
         self.logger.info("cleanup done.")
 
-    def _handle_request(self, action: str, payload: dict):
+    def _handle_request(self, action: str, payload: dict) -> dict:
+        """
+        Called by the supervisor from :func:`supervisor.Supervisor._analyzer_request` when a request from the
+        analyzer context from the analyzer module was received.
+
+        Provides credentials to services and resources and stores result info.
+        :param action: The command of the request.
+        :param payload: Additional value depending on action.
+        :return: The response message in the form of a dictionary.
+        """
         cc = self.core_config
         self.logger.info("requested '{}' with payload '{}'.".format(action, payload))
         if action == 'get_info':
@@ -235,6 +286,14 @@ class AgentBase:
         raise NotImplementedError()
 
 class OnlineAgent(AgentBase):
+    """
+    Agent for explorative (i.e. REPL-style) analysis.
+    Do not create directly, use `create_online_agent()` in :class:`.supervisor.Supervisor`
+
+    :param identifier: Username of the module or online analyzer.
+    :param token: Authentication token.
+    :param core_config: Configuration storage
+    """
     def __init__(self, identifier, token, core_config: CoreConfig):
 
         super().__init__(identifier, token, core_config, identifier, [], [], [], '', '')
@@ -264,8 +323,25 @@ class OnlineAgent(AgentBase):
 
 
 class ModuleAgent(AgentBase):
-    def __init__(self, analyzer_id,
-                 identifier, token,
+    """
+    Agent for analyzer module execution.
+    Executes ``cmdline`` in ``working_dir`` using via asyncio subprocess.
+
+    :param analyzer_id: Unique identifier of the analyzer module.
+    :param identifier: Username of the module or online analyzer.
+    :param token: Authentication token.
+    :param core_config: Configuration storage
+    :param input_formats: A list of raw data formats that the analyzer module will read.
+    :param input_types: A list of observation types that the analyzer module will read.
+    :param output_types: A list of observation types that the analyzer module will write.
+    :param working_dir: Directory of the analyzer module repository.
+    :param ensure_clean_repo: Whether repository should be cleaned before execution.
+                              Should be true for production environments.
+    """
+    def __init__(self,
+                 analyzer_id: str,
+                 identifier: str,
+                 token: str,
                  core_config: CoreConfig,
                  input_formats: Sequence[str],
                  input_types: Sequence[str],
@@ -322,6 +398,9 @@ class ModuleAgent(AgentBase):
             assert(len(self.stack) == 0)
 
     async def execute(self):
+        """
+        Coroutine which executes the analyzer module and prints stdio and stderr to log.
+        """
         self.logger.info(
             "executing analyzer with command line '{}' in working dir '{}'"
                 .format(self.cmdline, self.working_dir)

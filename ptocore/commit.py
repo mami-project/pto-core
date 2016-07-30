@@ -14,7 +14,7 @@ from .validation import ValidationError, validate, VALIDATION_COMPARE_FIELDS
 Interval = Tuple[datetime, datetime]
 
 
-def create_hash(obs):
+def create_hash(obs: dict):
     hs = sha1()
 
     cmp = {key: value for key, value in obs.items() if key in VALIDATION_COMPARE_FIELDS}
@@ -25,11 +25,11 @@ def create_hash(obs):
     return hs.digest()
 
 
-def equal_observation(a, b):
+def equal_observation(a: dict, b: dict):
     return all(a[key] == b[key] for key in VALIDATION_COMPARE_FIELDS)
 
 
-def find_counterpart(candidate, temporary_coll):
+def find_counterpart(candidate: dict, temporary_coll: Collection):
     hash = create_hash(candidate)
 
     for counterpart in temporary_coll.find({'hash': hash}):
@@ -39,7 +39,7 @@ def find_counterpart(candidate, temporary_coll):
     return None
 
 
-def get_repo_info(self, analyzer_id, repo_path):
+def get_repo_info(self, analyzer_id: str, repo_path: str):
     try:
         git_commit = repomanager.get_repository_commit(repo_path)
         git_url = repomanager.get_repository_url(repo_path)
@@ -60,8 +60,8 @@ def compute_hashes(coll: Collection):
 
 def perform_commit(analyzer_id: str,
                    output_types: Sequence[str],
-                   timespans,
-                   upload_ids,
+                   timespans: Sequence[Interval],
+                   upload_ids: Sequence[ObjectId],
                    max_action_id: int,
                    git_url: str,
                    git_commit: str,
@@ -178,7 +178,7 @@ def commit_direct(analyzer_id: str,
                   output_coll: Collection,
                   output_types: Sequence[str],
                   action_log: Collection,
-                  abort_max_errors=100):
+                  abort_max_errors: int=100):
     # get repository details
     try:
         git_url, git_commit = repomanager.get_repository_url_commit(repo_path)
@@ -225,7 +225,7 @@ def commit_normal(analyzer_id: str,
            output_coll: Collection,
            output_types: Sequence[str],
            action_log: Collection,
-           abort_max_errors=100):
+           abort_max_errors: int=100):
 
     # get repository details
     try:
