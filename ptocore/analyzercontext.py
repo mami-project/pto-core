@@ -270,24 +270,51 @@ class AnalyzerContext:
 
         uploads = self.metadata_coll.find(query)
 
-        seqfiles = defaultdict(list)
+
+        files = defaultdict(list)
         for upload in uploads:
-            seqfiles[upload['path']].append(upload)
+            files[upload['path']].append(upload)
+
+        # Now files is a dict with as keys the paths of the upload files, and
+    # as value the full upload entry
 
         mms = sc.emptyRDD()
 
         # build up chain of operations
-        for seqfile, uploads in seqfiles.items():
-            # create rdd of the metadata with seqKey: metadata
-            metadata = sc.parallelize(uploads).map(lambda upload: (upload['seqKey'], upload))
+        for path, uploads in files.items():
+            
+            
+            # Check if the file is a sequencefile or not.
+            # If it is a sequence file, unpack it.
+            # add all files to mms.
+            # WARNING: beginner code ahead. Adding support for none sequence
+            # files is the first thing I even did with spark / hadoop.
+            
+            if path.endswith(".seq"):
+                # create rdd of the metadata with seqKey: metadata
+                metadata = sc.parallelize(uploads).map(
+                    lambda upload: (upload['seqKey'], upload))
 
-            # sequence file is a binary key-value store. by definition the measurements are stored with seqKey as key.
-            textfiles = sc.sequenceFile(seqfile).map(lambda kv: (kv[0].decode('utf-8'), kv[1]))
+                # sequence file is a binary key-value store. by definition the
+                # measurements are stored with seqKey as key.
+                textfiles = sc.sequenceFile(path).map(
+                    lambda kv: (kv[0].decode('utf-8'), kv[1]))
+                # this inner join does two things:
+                # 1. keep only measurements we need
+                # 2. put metadata alongside each measurement
+                mm = metadata.join(textfiles)
 
-            # this inner join does two things:
-            # 1. keep only measurements we need
-            # 2. put metadata alongside each measurement
-            mm = metadata.join(textfiles)
+            else:
+                metadata = sc.parallelize(uploads).map(
+                    lambda upload: (upload['fileName'], upload))
+
+                # The map removes everything but the filename from the path.
+                # hdfs://host/path/to/file.extension --> file.extension
+                binfile = sc.binaryFiles(path).map(
+                    lambda kv: (kv[0].split('/')[-1], kv[1]))
+
+                mm = metadata.join(binfile)
+
 
             mms = mms.union(mm)
 
