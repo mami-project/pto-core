@@ -248,7 +248,7 @@ class AnalyzerContext:
             'complete': True,
             action_id_name: action_id_condition,
             valid_name: True,
-            'meta.format': {'$in': ["ecnspider1-zip-csv-ipfix"]},
+            'meta.format': {'$in': ["ps-ecn-fjson-bz2"]},
             '$or': [{'_id': upload_id for upload_id in self.result_upload_ids}]
         }
 
