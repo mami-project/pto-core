@@ -78,8 +78,11 @@ def validate(
             # check that time is within any timespan
             time = doc['time']
             if isinstance(time, dict):
+                time['from'] = time['from'].replace(microsecond = 0)
+                time['to'] = time['to'].replace(microsecond = 0)
                 check(any(timespan[0] <= time['from'] <= time['to'] <= timespan[1] for timespan in timespans), obsid, 'timespan')
             else:
+                time = time.replace(microsecond = 0)
                 check(any(timespan[0] <= time <= timespan[1] for timespan in timespans), obsid, 'timespan')
 
             # check that path consists only of valid path elements
