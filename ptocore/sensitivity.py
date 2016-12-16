@@ -122,7 +122,10 @@ class ActionSetBase:
 
         return self.get_max_action_id(), todo_tl.intervals
 
-    def only_inputs(self) -> Tuple[int, Sequence[Interval]]:
+    def input_timespans(self) -> Tuple[int, Sequence[Interval]]:
+        """
+        Return the max action id and merged timespans of the input actions
+        """
         
         input_tl = timeline.Timeline()
         for action in self.input_actions:
@@ -131,7 +134,6 @@ class ActionSetBase:
                 input_tl.add_interval(start, end)
             
         return self.get_max_action_id(), input_tl.intervals
-
 
 class ActionSetTest(ActionSetBase):
     def __init__(self,
@@ -210,8 +212,67 @@ def extend(extend_func: Callable[[Interval], Interval],
 
     return max_action_id, tl.intervals
 
+def get_islands(islands, input_timespans):
+    """
+    Return the islands that contain elements from input_timespans
+    
+    Given two lists of timespans: `islands` and `input_timespans`,
+    return all elements of `islands` that overlap with one or more
+    elements of `intput_timespans`
+    """
+
+    output_timespans = set()
+
+    # For every input timespan, we check with wat islands it overlaps
+    for input_timespan in input_timespans:
+        input_start, input_end = input_timespan
+        for island in islands:
+            island_start, island_end = island
+
+            # If the input timespan starts before the start of island, and the
+            # input timespan end after the start of the island.
+            # In other words: The island starts during the input timespan
+            # Examples:
+            #                    input timespan start
+            #                    |
+            #                    |   island start
+            #                    |   \
+            # island:            \    =======           OR      ======
+            # input_timespan:     ======     \                ===========
+            #                           \    island end
+            #                            |
+            #                            input timespand end
+            #
+            if input_start <= island_start and input_end >= island_start:
+                output_timespans.add(island)
+                continue
+
+            # If the input timespan starts after the start of the island, and
+            # the input timespand ends before the end of the island.
+            # In other words: The input timespan starts during the island
+            #                       
+            # island:           =======           OR         ==========
+            # input_timespan:        ======                     =====
+            #
+            if input_start >= island_start and input_start <= island_end:
+                output_timespans.add(island)
+                continue
+
+    return output_timespans
 
 def margin(offset: timedelta, action_set: ActionSetBase):
-    max_action_id, timespans = action_set.only_inputs()
+    max_action_id, input_timespans = action_set.input_timespans()
 
-    return max_action_id, timeline.margin(offset, timespans)
+    # The input timespans grouped by the `margin` method
+    input_islands = timeline.margin(offset, input_timespans)
+    # The list out unprocssed inputs, determined by the `basic` method
+    # we do not care about the max_timespans here, because the action_set
+    # has not changed, so neither has the max_action_id
+    unprocessed_timespans = action_set.basic()[1]
+
+    result_timespans = list(get_islands(input_islands, unprocessed_timespans))
+    # Sorting here. We don't really care about the order, but non-determinism
+    # can be detrimental to a debuggers health.
+    result_timespans.sort()
+
+    return max_action_id, result_timespans
