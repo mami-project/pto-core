@@ -122,6 +122,16 @@ class ActionSetBase:
 
         return self.get_max_action_id(), todo_tl.intervals
 
+    def only_inputs(self) -> Tuple[int, Sequence[Interval]]:
+        
+        input_tl = timeline.Timeline()
+        for action in self.input_actions:
+            for timespan in action['timespans']:
+                start, end = timespan
+                input_tl.add_interval(start, end)
+            
+        return self.get_max_action_id(), input_tl.intervals
+
 
 class ActionSetTest(ActionSetBase):
     def __init__(self,
@@ -202,6 +212,6 @@ def extend(extend_func: Callable[[Interval], Interval],
 
 
 def margin(offset: timedelta, action_set: ActionSetBase):
-    max_action_id, timespans = action_set.basic()
+    max_action_id, timespans = action_set.only_inputs()
 
     return max_action_id, timeline.margin(offset, timespans)
